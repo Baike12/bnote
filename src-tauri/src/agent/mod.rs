@@ -26,6 +26,7 @@ pub mod skills;
 pub mod tasks;
 pub mod todo;
 pub mod tools;
+pub mod trust;
 pub mod types;
 
 pub use provider::Provider;
@@ -106,7 +107,7 @@ fn default_max_tokens() -> u32 {
     8_192
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum McpServerConfig {
     Stdio {
@@ -125,6 +126,68 @@ pub enum McpServerConfig {
         #[serde(default, rename = "timeoutsMs", alias = "timeouts_ms")]
         timeouts_ms: Option<u64>,
     },
+}
+
+impl<'de> Deserialize<'de> for McpServerConfig {
+    /// `type` is optional, the way every other agent's `.mcp.json` writes it:
+    /// a `command` means stdio and a `url` means HTTP, so a project's shared
+    /// file can be used unchanged. `sse` is accepted as the older name of the
+    /// HTTP transport; a server that only speaks SSE reports its error in the
+    /// settings page instead of failing to parse.
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::de::Error as _;
+
+        let value = serde_json::Value::deserialize(deserializer)?;
+        let object = value
+            .as_object()
+            .ok_or_else(|| D::Error::custom("an MCP server must be a JSON object"))?;
+        let kind = object.get("type").and_then(|v| v.as_str()).unwrap_or("");
+        let http = match kind {
+            "http" | "streamable_http" | "streamable-http" | "sse" => true,
+            "stdio" => false,
+            "" => object.contains_key("url") && !object.contains_key("command"),
+            other => return Err(D::Error::custom(format!("unknown MCP transport `{other}`"))),
+        };
+        let string_field = |name: &str| -> Option<String> {
+            object
+                .get(name)
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+        };
+        let map_field =
+            |name: &str| -> Result<std::collections::BTreeMap<String, String>, D::Error> {
+                match object.get(name) {
+                    Some(value) => serde_json::from_value(value.clone()).map_err(D::Error::custom),
+                    None => Ok(Default::default()),
+                }
+            };
+        if http {
+            let url = string_field("url")
+                .ok_or_else(|| D::Error::custom("an HTTP MCP server needs `url`"))?;
+            return Ok(McpServerConfig::Http {
+                url,
+                headers: map_field("headers")?,
+                timeouts_ms: object
+                    .get("timeoutsMs")
+                    .or_else(|| object.get("timeouts_ms"))
+                    .and_then(|v| v.as_u64()),
+            });
+        }
+        let command = string_field("command")
+            .ok_or_else(|| D::Error::custom("an MCP server needs `command` or `url`"))?;
+        let args = match object.get("args") {
+            Some(value) => serde_json::from_value(value.clone()).map_err(D::Error::custom)?,
+            None => Vec::new(),
+        };
+        Ok(McpServerConfig::Stdio {
+            command,
+            args,
+            env: map_field("env")?,
+        })
+    }
 }
 
 impl AgentConfig {

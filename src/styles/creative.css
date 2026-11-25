@@ -245,6 +245,67 @@
    The two lists carry the same information per row (a name, a one-line
    summary, a source/type tag) and clip the middle instead of wrapping, so a
    long path never turns the list into a paragraph. */
+/* MCP servers are grouped by the scope that defines them (the vault's user
+   file vs the code project's own files), with a live check per row. */
+.mcp-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.mcp-groups .mcp-list {
+  padding: 6px;
+}
+.mcp-state {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--text-faint);
+}
+.mcp-state-connected {
+  background: var(--ok);
+}
+.mcp-state-error {
+  background: var(--danger);
+}
+/* A check in flight: the accent, pulsing, so it reads as work rather than a
+   settled state. */
+.mcp-state-checking {
+  background: var(--accent);
+  animation: mcp-pulse 1s ease-in-out infinite;
+}
+.mcp-state-disabled,
+.mcp-state-unused {
+  background: var(--text-faint);
+}
+/* Project servers awaiting approval: not an error, but not connected either. */
+.mcp-state-untrusted {
+  background: var(--accent);
+}
+.mcp-row-source {
+  flex: none;
+  font-size: 10.5px;
+  color: var(--text-faint);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0 4px;
+}
+.mcp-row-approve {
+  flex: none;
+  font-size: 11px;
+  padding: 2px 8px;
+}
+@keyframes mcp-pulse {
+  50% {
+    opacity: 0.25;
+  }
+}
+.mcp-row-tools {
+  flex: none;
+  font-size: 10.5px;
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
 .mcp-list {
   list-style: none;
   margin: 0;

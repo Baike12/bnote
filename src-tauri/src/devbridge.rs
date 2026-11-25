@@ -465,6 +465,19 @@ async fn dispatch(app: &AppHandle, cmd: &str, args: &Value) -> Result<Value, Str
         "agent_list_project_files" => {
             json_ok!(agent::agent_list_project_files(app.state(), arg_str(args, "workdir")?).await)
         }
+        "agent_mcp_status" => json_ok!(agent::agent_mcp_status(
+            app.state(),
+            arg_str(args, "mode")?,
+            optional_str(args, "workdir")
+        )
+        .await),
+        "agent_trust_mcp_server" => json_ok!(agent::agent_trust_mcp_server(
+            app.state(),
+            arg_str(args, "mode")?,
+            arg_str(args, "workdir")?,
+            arg_str(args, "name")?
+        )
+        .await),
         "agent_read_skill" => {
             json_ok!(agent::agent_read_skill(
                 app.state(),
@@ -669,6 +682,21 @@ async fn dispatch(app: &AppHandle, cmd: &str, args: &Value) -> Result<Value, Str
         "agent_write_mode_settings" => json_ok!(home::agent_write_mode_settings(
             app.state(),
             arg_str(args, "mode")?,
+            arg_str(args, "contents")?
+        )
+        .await),
+        "agent_read_settings_scope" => json_ok!(home::agent_read_settings_scope(
+            app.state(),
+            arg_str(args, "mode")?,
+            optional_str(args, "workdir"),
+            arg_str(args, "scope")?
+        )
+        .await),
+        "agent_write_settings_scope" => json_ok!(home::agent_write_settings_scope(
+            app.state(),
+            arg_str(args, "mode")?,
+            optional_str(args, "workdir"),
+            arg_str(args, "scope")?,
             arg_str(args, "contents")?
         )
         .await),

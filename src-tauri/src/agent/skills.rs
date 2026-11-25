@@ -4,7 +4,8 @@
 //!
 //! The roots depend on the mode, and each entry remembers where it came from:
 //!
-//!   coding    `<mode root>/skills` (vault), `<project>/.agents/skills`
+//!   coding    `<mode root>/skills` (vault), `.agents/skills` of every level
+//!             from the code project up to the git root, nearest first
 //!             (project), `~/.agents/skills` (home), plus `skillDirs`
 //!   creative  `<mode root>/skills` only (a creative agent must not inherit the
 //!             coding agent's skills)
@@ -49,14 +50,29 @@ pub fn roots_for(
                 path: home::mode_skills_dir(root),
                 source: "vault",
             }];
+            let home_skills = home::shared_agents_skills();
             if let Some(project) = workdir {
-                roots.push(SkillRoot {
-                    path: project.join(".agents").join("skills"),
-                    source: "project",
-                });
+                // Every level from the project up to the git root, nearest
+                // first: a repository that keeps shared skills at its root
+                // still serves a code project opened in a subdirectory. Ancestors
+                // without the directory are skipped so the settings page lists
+                // real sources only; the project's own root is always listed.
+                for dir in home::project_ancestors(project) {
+                    let path = dir.join(".agents").join("skills");
+                    if path == home_skills {
+                        continue; // already the `home` root below
+                    }
+                    if dir != *project && !path.is_dir() {
+                        continue;
+                    }
+                    roots.push(SkillRoot {
+                        path,
+                        source: "project",
+                    });
+                }
             }
             roots.push(SkillRoot {
-                path: home::shared_agents_skills(),
+                path: home_skills,
                 source: "home",
             });
             roots.extend(extra.iter().map(|dir| SkillRoot {
@@ -269,6 +285,43 @@ mod tests {
         assert_eq!(dup.len(), 1);
         assert_eq!(dup[0].description, "vault copy");
         assert!(!registry.skills.iter().any(|s| s.name == "hidden"));
+    }
+
+    #[test]
+    fn every_level_from_the_git_root_down_offers_its_agents_skills() {
+        let vault_root = temp("chain-vault");
+        let repo = temp("chain-repo");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        skill(
+            &repo.join(".agents/skills"),
+            "root-skill",
+            "at the repo root",
+        );
+        let nested = repo.join("apps/web");
+        std::fs::create_dir_all(&nested).unwrap();
+        skill(&nested.join(".agents/skills"), "near", "nearest");
+        skill(
+            &nested.join(".agents/skills"),
+            "root-skill",
+            "shadowed copy",
+        );
+        let registry =
+            SkillRegistry::discover(AgentMode::Coding, &vault_root, Some(&nested), &[], &[]);
+        let by_name = |name: &str| {
+            registry
+                .skills
+                .iter()
+                .find(|s| s.name == name)
+                .unwrap_or_else(|| panic!("missing {name}"))
+        };
+        assert_eq!(by_name("near").source, "project");
+        assert_eq!(
+            by_name("root-skill").description,
+            "shadowed copy",
+            "the nearest definition wins"
+        );
+        std::fs::remove_dir_all(&vault_root).unwrap();
+        std::fs::remove_dir_all(&repo).unwrap();
     }
 
     #[test]

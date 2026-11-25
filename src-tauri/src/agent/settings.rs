@@ -1,6 +1,7 @@
 //! Layered, per-mode settings (Claude Code's `settings.json` shape):
 //!
 //!   `<mode root>/settings.json`              the mode (and its vault)
+//!   `<project>/.mcp.json`                    coding only: the cross-tool MCP file
 //!   `<project>/.bnote/settings.json`         coding only: the code project
 //!   `<project>/.bnote/settings.local.json`   coding only: local, not checked in
 //!
@@ -91,29 +92,92 @@ pub struct SettingsFile {
     pub error: Option<String>,
 }
 
+/// Where a server was defined. The layer is the scope the settings page shows:
+/// the vault's mode file is the user scope, the code project's two files are
+/// the project scope (checked in) and its local override. Claude Code splits
+/// the same way (`.mcp.json` vs `~/.claude.json`); keeping one settings file
+/// per scope means a project's server list travels with its repository.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum McpScope {
+    User,
+    Project,
+    Local,
+}
+
+impl McpScope {
+    pub fn id(self) -> &'static str {
+        match self {
+            McpScope::User => "user",
+            McpScope::Project => "project",
+            McpScope::Local => "local",
+        }
+    }
+}
+
+/// The file a server's definition came from. A later layer that redefines the
+/// same name wins the definition, and this follows it, so the list can never
+/// label a server with a layer that lost the merge.
+#[derive(Debug, Clone)]
+pub struct McpSource {
+    pub scope: McpScope,
+    pub path: PathBuf,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct LoadedSettings {
     pub settings: Settings,
     /// The files that were consulted, in merge order (the settings UI shows
     /// them; a parse error is surfaced there too).
     pub files: Vec<SettingsFile>,
+    /// The defining file of every `mcpServers` entry.
+    pub mcp_sources: BTreeMap<String, McpSource>,
 }
 
-pub fn project_files(project: Option<&Path>) -> Vec<PathBuf> {
+/// One file of the merge order: where it is, and what it is allowed to say.
+#[derive(Debug, Clone)]
+pub struct SettingsLayer {
+    pub path: PathBuf,
+    pub scope: McpScope,
+    /// `.mcp.json` is the cross-tool file other agents also write: only its
+    /// `mcpServers` are read, so a repository cannot inject permissions or
+    /// hooks into bnote through it.
+    pub mcp_only: bool,
+}
+
+pub fn project_files(project: Option<&Path>) -> Vec<SettingsLayer> {
     let Some(project) = project else {
         return Vec::new();
     };
     vec![
-        project.join(".bnote").join("settings.json"),
-        project.join(".bnote").join("settings.local.json"),
+        SettingsLayer {
+            path: project.join(".mcp.json"),
+            scope: McpScope::Project,
+            mcp_only: true,
+        },
+        SettingsLayer {
+            path: project.join(".bnote").join("settings.json"),
+            scope: McpScope::Project,
+            mcp_only: false,
+        },
+        SettingsLayer {
+            path: project.join(".bnote").join("settings.local.json"),
+            scope: McpScope::Local,
+            mcp_only: false,
+        },
     ]
 }
 
 /// Every settings file of a session, in merge order. Only coding sessions read
 /// the code project's own files; study and creative sessions are confined to
-/// their mode root.
-pub fn file_list(mode: AgentMode, root: &Path, project: Option<&Path>) -> Vec<PathBuf> {
-    let mut files = vec![home::mode_settings_file(root)];
+/// their mode root. The tool-specific project file comes after `.mcp.json`, so
+/// an explicit bnote setting beats a file shared with other agents (the same
+/// order grok-build uses for `config.toml` vs `.mcp.json`).
+pub fn file_list(mode: AgentMode, root: &Path, project: Option<&Path>) -> Vec<SettingsLayer> {
+    let mut files = vec![SettingsLayer {
+        path: home::mode_settings_file(root),
+        scope: McpScope::User,
+        mcp_only: false,
+    }];
     if mode.reads_project() {
         files.extend(project_files(project));
     }
@@ -122,7 +186,8 @@ pub fn file_list(mode: AgentMode, root: &Path, project: Option<&Path>) -> Vec<Pa
 
 pub fn load(mode: AgentMode, root: &Path, project: Option<&Path>) -> LoadedSettings {
     let mut loaded = LoadedSettings::default();
-    for path in file_list(mode, root, project) {
+    for layer in file_list(mode, root, project) {
+        let path = layer.path;
         let exists = path.is_file();
         let mut file = SettingsFile {
             path: path.clone(),
@@ -131,16 +196,50 @@ pub fn load(mode: AgentMode, root: &Path, project: Option<&Path>) -> LoadedSetti
         };
         if exists {
             match std::fs::read_to_string(&path) {
-                Ok(raw) => match serde_json::from_str::<Settings>(&raw) {
-                    Ok(settings) => merge(&mut loaded.settings, settings),
-                    Err(e) => file.error = Some(e.to_string()),
-                },
+                Ok(raw) => {
+                    let parsed = if layer.mcp_only {
+                        serde_json::from_str::<McpOnlyFile>(&raw).map(McpOnlyFile::into_settings)
+                    } else {
+                        serde_json::from_str::<Settings>(&raw)
+                    };
+                    match parsed {
+                        Ok(settings) => {
+                            for name in settings.mcp_servers.keys() {
+                                loaded.mcp_sources.insert(
+                                    name.clone(),
+                                    McpSource {
+                                        scope: layer.scope,
+                                        path: path.clone(),
+                                    },
+                                );
+                            }
+                            merge(&mut loaded.settings, settings);
+                        }
+                        Err(e) => file.error = Some(e.to_string()),
+                    }
+                }
                 Err(e) => file.error = Some(e.to_string()),
             }
         }
         loaded.files.push(file);
     }
     loaded
+}
+
+/// The shape of a project's `.mcp.json`: a server map and nothing else.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+struct McpOnlyFile {
+    mcp_servers: BTreeMap<String, McpServerConfig>,
+}
+
+impl McpOnlyFile {
+    fn into_settings(self) -> Settings {
+        Settings {
+            mcp_servers: self.mcp_servers,
+            ..Settings::default()
+        }
+    }
 }
 
 fn merge(into: &mut Settings, from: Settings) {
@@ -400,7 +499,7 @@ mod tests {
             .ends_with("agents/creative/settings.json"));
         assert!(creative.settings.permissions.deny.is_empty());
         let coding = load(AgentMode::Coding, &root, Some(&project));
-        assert_eq!(coding.files.len(), 3);
+        assert_eq!(coding.files.len(), 4);
         assert_eq!(
             coding.settings.permissions.deny,
             vec!["Bash(rm:*)".to_string()]
@@ -427,6 +526,90 @@ mod tests {
             other => panic!("unexpected server: {other:?}"),
         }
         assert_eq!(s.disabled_mcp_servers, vec!["b".to_string()]);
+        std::fs::remove_dir_all(&project).unwrap();
+    }
+
+    #[test]
+    fn mcp_sources_name_the_winning_scope_and_file() {
+        let project = temp("mcp-scope");
+        let root = project.join(".bnote/agents/coding");
+        write(
+            &root.join("settings.json"),
+            r#"{"mcpServers":{"user-only":{"type":"stdio","command":"u"},"both":{"type":"stdio","command":"u"}}}"#,
+        );
+        write(
+            &project.join(".bnote/settings.json"),
+            r#"{"mcpServers":{"both":{"type":"stdio","command":"p"}}}"#,
+        );
+        write(
+            &project.join(".bnote/settings.local.json"),
+            r#"{"mcpServers":{"local-only":{"type":"stdio","command":"l"}}}"#,
+        );
+        let loaded = load(AgentMode::Coding, &root, Some(&project));
+        assert_eq!(loaded.mcp_sources["user-only"].scope, McpScope::User);
+        assert_eq!(loaded.mcp_sources["both"].scope, McpScope::Project);
+        assert_eq!(
+            loaded.mcp_sources["both"].path,
+            project.join(".bnote/settings.json"),
+            "the source follows the winning definition"
+        );
+        assert_eq!(loaded.mcp_sources["local-only"].scope, McpScope::Local);
+        std::fs::remove_dir_all(&project).unwrap();
+    }
+
+    #[test]
+    fn the_shared_mcp_file_is_a_project_layer_and_infers_the_transport() {
+        let project = temp("mcp-json");
+        let root = project.join(".bnote/agents/coding");
+        write(
+            &project.join(".mcp.json"),
+            r#"{"mcpServers":{"shared":{"command":"npx","args":["-y","srv"]},"over":{"command":"cc"},"remote":{"url":"http://shared"}}}"#,
+        );
+        write(
+            &project.join(".bnote/settings.json"),
+            r#"{"mcpServers":{"over":{"type":"http","url":"http://bnote"}}}"#,
+        );
+        let loaded = load(AgentMode::Coding, &root, Some(&project));
+        assert_eq!(loaded.mcp_sources["shared"].scope, McpScope::Project);
+        assert_eq!(loaded.mcp_sources["shared"].path, project.join(".mcp.json"));
+        match &loaded.settings.mcp_servers["shared"] {
+            McpServerConfig::Stdio { command, args, .. } => {
+                assert_eq!(command, "npx");
+                assert_eq!(args, &vec!["-y".to_string(), "srv".to_string()]);
+            }
+            other => panic!("unexpected server: {other:?}"),
+        }
+        match &loaded.settings.mcp_servers["remote"] {
+            McpServerConfig::Http { url, .. } => assert_eq!(url, "http://shared"),
+            other => panic!("unexpected server: {other:?}"),
+        }
+        // The bnote file comes after the shared one: an explicit setting wins.
+        match &loaded.settings.mcp_servers["over"] {
+            McpServerConfig::Http { url, .. } => assert_eq!(url, "http://bnote"),
+            other => panic!("unexpected server: {other:?}"),
+        }
+        assert_eq!(
+            loaded.mcp_sources["over"].path,
+            project.join(".bnote/settings.json")
+        );
+        std::fs::remove_dir_all(&project).unwrap();
+    }
+
+    #[test]
+    fn the_shared_mcp_file_cannot_contribute_permissions_or_hooks() {
+        let project = temp("mcp-json-scope");
+        let root = project.join(".bnote/agents/coding");
+        write(
+            &project.join(".mcp.json"),
+            r#"{"mcpServers":{"s":{"command":"x"}},"permissions":{"allow":["Bash"]},"hooks":{"Stop":[{"hooks":[{"command":"anything"}]}]}}"#,
+        );
+        let loaded = load(AgentMode::Coding, &root, Some(&project));
+        assert!(loaded.settings.mcp_servers.contains_key("s"));
+        assert!(
+            loaded.settings.permissions.allow.is_empty(),
+            "a file other agents also write must not grant bnote permissions"
+        );
+        assert!(loaded.settings.hooks.is_empty());
         std::fs::remove_dir_all(&project).unwrap();
     }
 
@@ -514,15 +697,16 @@ mod extra_tests {
         .expect("local settings");
 
         let loaded = load(AgentMode::Coding, &root, Some(&project));
-        // Merge order: mode root, project, project-local.
-        assert_eq!(loaded.files.len(), 3);
+        // Merge order: mode root, .mcp.json, project, project-local.
+        assert_eq!(loaded.files.len(), 4);
         assert!(loaded.files[0].exists && loaded.files[0].error.is_none());
-        assert!(loaded.files[1].exists);
+        assert!(!loaded.files[1].exists, "no .mcp.json in this project");
+        assert!(loaded.files[2].exists);
         assert!(
-            loaded.files[1].error.is_some(),
+            loaded.files[2].error.is_some(),
             "a broken file must say so instead of silently contributing nothing"
         );
-        assert!(loaded.files[2].error.is_none());
+        assert!(loaded.files[3].error.is_none());
         // Both good files still apply: one broken layer costs only that layer.
         assert!(loaded.settings.permissions.deny.iter().any(|d| d == "Bash"));
         assert!(loaded

@@ -8,8 +8,10 @@
 //!   - every mode reads its own root's `AGENTS.md` + `rules/*.md`
 //!     (`<vault>/.bnote/agents/<mode>/`);
 //!   - coding sessions additionally read the repository, walking from the git
-//!     root down to the project root (AGENTS.md / CLAUDE.md /
-//!     .bnote/AGENTS.md / .bnote/rules / AGENTS.local.md);
+//!     root down to the project root (AGENTS.md / .bnote/AGENTS.md /
+//!     .bnote/rules / AGENTS.local.md); `CLAUDE.md` is not read, because
+//!     AGENTS.md is the file Codex, Zed and grok-build all read and a repo
+//!     that keeps both would otherwise pay for the same text twice;
 //!   - study/creative sessions read nothing else (a repository's files have
 //!     nothing to do with the notebook).
 
@@ -78,7 +80,7 @@ pub fn collect(
 
     // Root first, then each level down to the project: the last file is the
     // highest priority and the model reads them in that order.
-    let mut dirs = ancestors_to_git_root(project);
+    let mut dirs = crate::agent::home::project_ancestors(project);
     dirs.reverse();
     for dir in dirs {
         push(
@@ -86,13 +88,6 @@ pub fn collect(
             &mut seen,
             &excluded,
             &dir.join("AGENTS.md"),
-            PROJECT_DESC,
-        );
-        push(
-            &mut out,
-            &mut seen,
-            &excluded,
-            &dir.join("CLAUDE.md"),
             PROJECT_DESC,
         );
         push(
@@ -127,27 +122,6 @@ fn rules_in(dir: &Path) -> Vec<PathBuf> {
         .unwrap_or_default();
     files.sort();
     files
-}
-
-/// `project` plus its ancestors up to and including the git root (or the home
-/// directory / filesystem root when there is no repository).
-fn ancestors_to_git_root(project: &Path) -> Vec<PathBuf> {
-    // `$HOME` itself, not the agent home: the walk stops at the user's home
-    // directory regardless of where the vault (and its `.bnote`) lives.
-    let home = Some(crate::agent::home::user_home());
-    let mut dirs = Vec::new();
-    let mut cur = Some(project.to_path_buf());
-    while let Some(dir) = cur {
-        dirs.push(dir.clone());
-        if dir.join(".git").exists() {
-            break;
-        }
-        if home.as_ref().is_some_and(|h| dir == *h) {
-            break;
-        }
-        cur = dir.parent().map(|p| p.to_path_buf());
-    }
-    dirs
 }
 
 /// Reads one file and expands its `@import`s into separate entries.
@@ -395,7 +369,7 @@ pub fn nested(target: &Path, project: &Path, loaded: &HashSet<PathBuf>) -> Vec<I
         dir = current.parent().map(|p| p.to_path_buf());
     }
     for dir in dirs {
-        for name in ["AGENTS.md", ".bnote/AGENTS.md", "CLAUDE.md"] {
+        for name in ["AGENTS.md", ".bnote/AGENTS.md"] {
             let path = dir.join(name);
             if let Some(content) = read_instruction(&path, &excluded, &mut seen) {
                 out.push(InstructionFile {
@@ -466,6 +440,21 @@ mod tests {
             project_files.last().unwrap().description,
             LOCAL_DESC,
             "AGENTS.local.md comes last"
+        );
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn a_repositorys_claude_md_is_not_read() {
+        let root = temp("claude-md");
+        std::fs::create_dir_all(root.join(".git")).unwrap();
+        std::fs::write(root.join("AGENTS.md"), "agents rules").unwrap();
+        std::fs::write(root.join("CLAUDE.md"), "claude rules").unwrap();
+        let files = collect(None, Some(&root), true, &[]);
+        assert!(files.iter().any(|f| f.content.contains("agents rules")));
+        assert!(
+            !files.iter().any(|f| f.content.contains("claude rules")),
+            "AGENTS.md is the one project instruction file bnote reads"
         );
         std::fs::remove_dir_all(&root).unwrap();
     }

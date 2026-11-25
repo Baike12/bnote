@@ -332,18 +332,22 @@ fn mode_paths(
     let project = workdir.filter(|p| p.is_dir());
     let settings_project = if mode.reads_project() { project } else { None };
     let loaded = crate::agent::settings::load(mode, root, settings_project);
+    // The scope comes from the layer itself, not from the index: a coding
+    // session now has two project files (`.mcp.json` and `.bnote/settings.json`)
+    // and an index would label the second one wrong.
+    let layers = crate::agent::settings::file_list(mode, root, settings_project);
     let files = loaded
         .files
         .iter()
-        .enumerate()
-        .map(|(index, file)| SettingsFileInfo {
+        .zip(layers)
+        .map(|(file, layer)| SettingsFileInfo {
             path: file.path.to_string_lossy().to_string(),
             exists: file.exists,
             error: file.error.clone(),
-            kind: match index {
-                0 => "mode",
-                1 => "project",
-                _ => "local",
+            kind: match layer.scope {
+                crate::agent::settings::McpScope::User => "mode",
+                crate::agent::settings::McpScope::Project => "project",
+                crate::agent::settings::McpScope::Local => "local",
             }
             .to_string(),
         })
@@ -393,6 +397,90 @@ pub async fn agent_mode_paths(
         let default_root = home::default_mode_root(mode, vault.as_deref());
         let project = workdir.map(PathBuf::from);
         Ok(mode_paths(mode, &root, &default_root, project.as_deref()))
+    })
+    .await
+    .map_err(|e| format!("JOIN_FAILED: {}", e))?
+}
+
+/// Resolves one MCP scope's settings file. The frontend names a scope, never a
+/// path: a project is always `<project>/.bnote/settings.json`, so this command
+/// cannot be turned into an arbitrary file writer.
+fn settings_scope_path(
+    mode: home::AgentMode,
+    vault: Option<&Path>,
+    workdir: Option<&Path>,
+    scope: &str,
+) -> Result<PathBuf, String> {
+    match scope {
+        "user" => Ok(home::mode_settings_file(&home::mode_root(mode, vault))),
+        "project" | "local" => {
+            if !mode.reads_project() {
+                return Err(format!("INVALID_SCOPE: {} 模式没有项目级设置", mode.id()));
+            }
+            let project = workdir.ok_or_else(|| "INVALID_WORKDIR: 未打开代码项目".to_string())?;
+            if !project.is_dir() {
+                return Err(format!("INVALID_WORKDIR: {} 不是目录", project.display()));
+            }
+            let name = if scope == "project" {
+                "settings.json"
+            } else {
+                "settings.local.json"
+            };
+            Ok(project.join(".bnote").join(name))
+        }
+        other => Err(format!("INVALID_SCOPE: {other}")),
+    }
+}
+
+/// The raw text of one MCP scope's settings file (empty when it does not
+/// exist). `user` is the vault's mode file; `project` and `local` are the code
+/// project's two files.
+#[tauri::command]
+pub async fn agent_read_settings_scope(
+    state: State<'_, AppState>,
+    mode: String,
+    workdir: Option<String>,
+    scope: String,
+) -> CmdResult<String> {
+    let mode = mode_from(&mode)?;
+    let vault = state.vault();
+    tauri::async_runtime::spawn_blocking(move || {
+        let project = workdir.map(PathBuf::from);
+        let path = settings_scope_path(mode, vault.as_deref(), project.as_deref(), &scope)?;
+        Ok(std::fs::read_to_string(path).unwrap_or_default())
+    })
+    .await
+    .map_err(|e| format!("JOIN_FAILED: {}", e))?
+}
+
+/// Writes one MCP scope's settings file after checking it is a JSON object.
+#[tauri::command]
+pub async fn agent_write_settings_scope(
+    state: State<'_, AppState>,
+    mode: String,
+    workdir: Option<String>,
+    scope: String,
+    contents: String,
+) -> CmdResult<()> {
+    let mode = mode_from(&mode)?;
+    let vault = state.vault();
+    tauri::async_runtime::spawn_blocking(move || {
+        let trimmed = contents.trim();
+        let value: serde_json::Value = if trimmed.is_empty() {
+            serde_json::json!({})
+        } else {
+            serde_json::from_str(trimmed).map_err(|e| format!("INVALID_JSON: {}", e))?
+        };
+        if !value.is_object() {
+            return Err("INVALID_JSON: settings.json must be an object".to_string());
+        }
+        let project = workdir.map(PathBuf::from);
+        let path = settings_scope_path(mode, vault.as_deref(), project.as_deref(), &scope)?;
+        if let Some(parent) = path.parent() {
+            home::ensure_dir(parent)?;
+        }
+        std::fs::write(&path, contents)
+            .map_err(|e| format!("WRITE_FAILED: {} ({})", path.display(), e))
     })
     .await
     .map_err(|e| format!("JOIN_FAILED: {}", e))?

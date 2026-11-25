@@ -275,7 +275,7 @@ The agent follows Claude Code's structure: definitions and prompts are compiled 
 
 | Mode | Model | MCP | Skills | Instructions |
 | --- | --- | --- | --- | --- |
-| Coding | shared | own `mcpServers` | mode root + project `.agents/skills` + `~/.agents/skills` | mode root, then the repository hierarchy |
+| Coding | shared | own `mcpServers` | mode root + `.agents/skills` from the project up to the git root + `~/.agents/skills` | mode root, then the repository hierarchy |
 | Creative | shared | own `mcpServers` | mode root only | mode root only |
 | Study | shared | none (no tools) | none | mode root only |
 
@@ -290,7 +290,7 @@ The model, endpoint and API key live in the home's `agent.json` (`<vault>/.bnote
 ### Instruction files (AGENTS.md)
 
 - **Every mode** reads its own `<vault>/.bnote/agents/<mode>/AGENTS.md` and `rules/*.md` (copied once from the old home root and `.bnote/AGENTS.md`)
-- **Coding sessions** additionally read `AGENTS.md` / `CLAUDE.md` / `.bnote/AGENTS.md` / `.bnote/rules/*.md` / `AGENTS.local.md` from the repository root down to the working directory
+- **Coding sessions** additionally read `AGENTS.md` / `.bnote/AGENTS.md` / `.bnote/rules/*.md` / `AGENTS.local.md` from the repository root down to the working directory; `CLAUDE.md` is not read (AGENTS.md is the file Codex, Zed and grok-build all read, so a repo carrying both otherwise pays for the same text twice)
 - **Study and creative sessions** never read a repository's instruction files
 - `@import` is followed (up to 5 levels, skipping code fences and comments) and `settings.instructionsExcludes` filters files by glob
 - When a file is read, any not-yet-loaded `AGENTS.md` between its directory and the project root is injected as a system-reminder on the next turn
@@ -305,17 +305,17 @@ The model, endpoint and API key live in the home's `agent.json` (`<vault>/.bnote
 
 ### Settings layers, hooks, and output styles
 
-- **Layers merge**: the mode's `settings.json`, then (coding only) `<project>/.bnote/settings.json` and `settings.local.json`; arrays concatenate and deduplicate, objects deep-merge, scalars take the last value. Fields: `mcpServers`, `disabledMcpServers`, `skillDirs`, `disabledSkills`, `env`, `permissions`, `hooks`, `outputStyle`, `instructionsExcludes`, `cleanupPeriodDays`, `plansDirectory`, `autoMemoryEnabled`, `autoMemoryDirectory`
-- **MCP is per mode**: a server list in the mode's `settings.json`; `disabledMcpServers` keeps a server configured while switching it off from the settings page
+- **Layers merge**: the mode's `settings.json`, then (coding only) `<project>/.mcp.json`, `<project>/.bnote/settings.json` and `settings.local.json`; arrays concatenate and deduplicate, objects deep-merge, scalars take the last value. `.mcp.json` contributes `mcpServers` only, so a file other agents also write cannot grant bnote permissions or hooks. Fields: `mcpServers`, `disabledMcpServers`, `skillDirs`, `disabledSkills`, `env`, `permissions`, `hooks`, `outputStyle`, `instructionsExcludes`, `cleanupPeriodDays`, `plansDirectory`, `autoMemoryEnabled`, `autoMemoryDirectory`
+- **MCP has two scopes**: the user list lives in the vault's `<mode root>/settings.json` (shared by every project); coding sessions also merge `<project>/.mcp.json` (the cross-agent file, optional `type`: `command` means stdio, `url` means HTTP), `<project>/.bnote/settings.json` (checked in) and `settings.local.json` (this machine only), the later file winning a name. A project-scope server starts only after its exact definition was approved: the vault's `trusted-mcp.json` records the digest, so editing the server asks again, and the status check does not spawn it before that. The settings page shows every scope with a live check per server (connect, `tools/list`, disconnect) and its tool count; `disabledMcpServers` keeps a server configured while switching it off
 - **Hooks**: `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `UserPromptSubmit`, `SessionStart`, `Stop`, `SubagentStart`, `SubagentStop`, `PreCompact`, `PostCompact`. They run through `sh -c` with JSON on stdin and a 60-second default timeout, and can return `permissionDecision`, `additionalContext`, or `updatedInput`; a non-zero exit can block a tool
 - **Output styles**: built-in default / Explanatory / Learning, plus custom files in `<mode root>/output-styles/*.md` and (coding) `<project>/.bnote/output-styles/*.md` (frontmatter: `name` / `description` / `keep-coding-instructions`); the selected `settings.outputStyle` is injected as a dynamic segment
-- **Settings UI follows the mode**: `Settings → Agent` shows `Model | MCP | Skills | AGENTS.md | Advanced` for coding, `Model | MCP | Skills | AGENTS.md` for creative, and `Model | AGENTS.md` for study. Every page reads and writes the real files (root path with an override, settings.json editor with parse state, per-server MCP switches); the window keeps one height and scrolls instead of resizing
+- **Settings UI follows the mode**: `Settings → Agent` shows `Model | MCP | Skills | AGENTS.md | Advanced` for coding, `Model | MCP | Skills | AGENTS.md` for creative, and `Model | AGENTS.md` for study. Every page reads and writes the real files (root path with an override, settings.json editor with parse state, per-server MCP switches); the window keeps one height and scrolls instead of resizing. The MCP page groups servers by user / project / local scope, shows each one's connection state, offers the approval a project server needs before it connects, and edits the file of the selected scope
 
 ### Memory, history, and skills
 
 - **Auto memory**: `.bnote/projects/<project key>/memory/MEMORY.md` is the only index, one file per memory, linked with `[[name]]`; coding sessions get the index plus the memory behavior prompt on every turn
 - **Prompt history**: every send appends to `.bnote/history.jsonl`. With an empty input, `↑` recalls this project's earlier prompts and `↓` walks forward; the walk resets after sending
-- **Skills**: coding scans `<vault>/.bnote/agents/coding/skills/`, `<code project>/.agents/skills/`, `~/.agents/skills/` (the Agent Skills convention) and `skillDirs`; creative scans only its own root; a duplicated name keeps the highest-precedence copy. The settings page groups the list by source
+- **Skills**: coding scans `<vault>/.bnote/agents/coding/skills/`, the `.agents/skills/` of every level from the code project up to the git root (nearest first), `~/.agents/skills/` (the Agent Skills convention) and `skillDirs`; creative scans only its own root; a duplicated name keeps the highest-precedence copy. The settings page groups the list by source
 
 ### The agent home layout
 
@@ -326,6 +326,7 @@ inside the notebook); with no vault open it falls back to `~/.bnote`, and
 ```text
 <vault>/.bnote/
 ├── agent.json            protocol / model / API key / per-mode root overrides
+├── trusted-mcp.json      approved project MCP servers (project path → name → digest)
 ├── history.jsonl         prompt history
 ├── plans/<slug>.md       plan-mode output
 ├── tasks/<list>/         persisted task list state
@@ -393,7 +394,8 @@ The home is the open vault's `.bnote`. Without a vault it falls back to `~/.bnot
 | `.bnote/snippets.js` | Vault-level LaTeX snippets; replaces the built-in set |
 | `.bnote/agents/<mode>/` | The mode's configuration root: `settings.json`, `AGENTS.md`, `skills/`, `rules/`, `output-styles/` |
 | `.bnote/settings.json`, `.bnote/settings.local.json` | Code-project agent settings, layered over the coding mode root |
-| `.agents/skills/` | Code-project skills (the Agent Skills convention) |
+| `.mcp.json` | Code-project MCP servers, the file other agents also read (merged before `.bnote/settings.json`) |
+| `.agents/skills/` | Code-project skills (the Agent Skills convention), scanned at every level up to the git root |
 | `.bnote/lsp.json` | Language server launch commands (travels with the repository) |
 | `.bnote/projects-manager/<name>.md` | One project todo list |
 | `.bnote/materials/index.json` | Material registry: identity → directory |

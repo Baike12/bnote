@@ -69,6 +69,131 @@ pub struct McpTool {
     pub input_schema: Value,
 }
 
+/// One row of the settings page's MCP list: the configured server, the scope
+/// it was defined in, and the result of the live check that produced this
+/// snapshot. `state` is `connected`, `error`, `disabled` (the entry is kept in
+/// the file but not started), `untrusted` (a project-scope server whose
+/// definition the user has not approved) or `unused` (the session's tool set
+/// has no MCP).
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpServerStatus {
+    pub name: String,
+    pub scope: String,
+    pub source: String,
+    pub transport: String,
+    pub target: String,
+    pub enabled: bool,
+    /// Whether a session would be allowed to start it (see `trust.rs`).
+    pub trusted: bool,
+    pub state: String,
+    pub tools: usize,
+    pub error: Option<String>,
+}
+
+fn describe(cfg: &McpServerConfig) -> (&'static str, String) {
+    match cfg {
+        McpServerConfig::Stdio { command, args, .. } => {
+            let mut target = command.clone();
+            for arg in args {
+                target.push(' ');
+                target.push_str(arg);
+            }
+            ("stdio", target)
+        }
+        McpServerConfig::Http { url, .. } => ("http", url.clone()),
+    }
+}
+
+/// One real status check: spawn/initialize, list tools, then drop the
+/// connection (dropping a stdio connection kills its child, so a check never
+/// leaves a server running).
+async fn check(name: &str, cfg: &McpServerConfig) -> (usize, Option<String>) {
+    match McpConnection::connect(name, cfg).await {
+        Ok(mut conn) => match conn.list_tools().await {
+            Ok(tools) => (tools.len(), None),
+            Err(error) => (0, Some(error)),
+        },
+        Err(error) => (0, Some(error)),
+    }
+}
+
+/// Checks every enabled server concurrently and returns one row per configured
+/// server, in name order. Concurrency matters: a dead stdio server costs the
+/// full 30s handshake timeout, and a settings page that opens after N of them
+/// in sequence would look frozen. An untrusted project server is never spawned
+/// (`trust.rs`): the check would otherwise run a command the user has not
+/// approved.
+pub async fn probe_all(
+    servers: &std::collections::BTreeMap<String, McpServerConfig>,
+    disabled: &[String],
+    sources: &std::collections::BTreeMap<String, super::settings::McpSource>,
+    trust: &super::trust::TrustStore,
+    mcp_enabled: bool,
+) -> Vec<McpServerStatus> {
+    let trusted_of = |name: &str, cfg: &McpServerConfig| {
+        let scope = sources
+            .get(name)
+            .map(|source| source.scope)
+            .unwrap_or(super::settings::McpScope::User);
+        trust.is_trusted(name, cfg, scope)
+    };
+    let checks = servers
+        .iter()
+        .filter(|(name, cfg)| {
+            mcp_enabled && !disabled.iter().any(|d| d == *name) && trusted_of(name, cfg)
+        })
+        .map(|(name, cfg)| async move {
+            let (tools, error) = check(name, cfg).await;
+            (name.clone(), tools, error)
+        });
+    let results: HashMap<String, (usize, Option<String>)> = futures::future::join_all(checks)
+        .await
+        .into_iter()
+        .map(|(name, tools, error)| (name, (tools, error)))
+        .collect();
+    servers
+        .iter()
+        .map(|(name, cfg)| {
+            let (transport, target) = describe(cfg);
+            let source = sources.get(name);
+            let enabled = !disabled.iter().any(|d| d == name);
+            let trusted = trusted_of(name, cfg);
+            // A configured-but-disabled server keeps its "disabled" state even
+            // when the mode has no MCP tool; "untrusted" is what the project
+            // scope needs before it may run; "unused" explains why an enabled
+            // server of such a mode was never started.
+            let (state, tools, error) = if !enabled {
+                ("disabled", 0, None)
+            } else if !trusted {
+                ("untrusted", 0, None)
+            } else if !mcp_enabled {
+                ("unused", 0, None)
+            } else {
+                match results.get(name) {
+                    Some((_, Some(error))) => ("error", 0, Some(error.clone())),
+                    Some((tools, None)) => ("connected", *tools, None),
+                    None => ("unused", 0, None),
+                }
+            };
+            McpServerStatus {
+                name: name.clone(),
+                scope: source.map(|s| s.scope.id()).unwrap_or("user").to_string(),
+                source: source
+                    .map(|s| s.path.to_string_lossy().to_string())
+                    .unwrap_or_default(),
+                transport: transport.to_string(),
+                target,
+                enabled,
+                trusted,
+                state: state.to_string(),
+                tools,
+                error,
+            }
+        })
+        .collect()
+}
+
 enum Transport {
     Stdio {
         child: tokio::process::Child,
@@ -649,6 +774,139 @@ mod tests {
             }
         });
         (format!("http://{addr}/mcp"), seen)
+    }
+
+    #[tokio::test]
+    async fn the_probe_checks_live_servers_and_reports_scope_disabled_and_unused() {
+        use crate::agent::settings::{McpScope, McpSource};
+        let (url, seen) = fake_mcp_server().await;
+        let mut servers = std::collections::BTreeMap::new();
+        servers.insert(
+            "live".to_string(),
+            McpServerConfig::Http {
+                url,
+                headers: std::collections::BTreeMap::new(),
+                timeouts_ms: Some(5_000),
+            },
+        );
+        // Port 1 refuses at once, so a dead server costs no timeout here.
+        servers.insert(
+            "dead".to_string(),
+            McpServerConfig::Http {
+                url: "http://127.0.0.1:1/mcp".to_string(),
+                headers: std::collections::BTreeMap::new(),
+                timeouts_ms: Some(1_000),
+            },
+        );
+        servers.insert(
+            "off".to_string(),
+            McpServerConfig::Stdio {
+                command: "true".to_string(),
+                args: Vec::new(),
+                env: std::collections::BTreeMap::new(),
+            },
+        );
+        let mut sources = std::collections::BTreeMap::new();
+        for (name, scope) in [
+            ("live", McpScope::User),
+            ("dead", McpScope::Project),
+            ("off", McpScope::Local),
+        ] {
+            sources.insert(
+                name.to_string(),
+                McpSource {
+                    scope,
+                    path: std::path::PathBuf::from(format!("/{name}/settings.json")),
+                },
+            );
+        }
+        let trust = crate::agent::trust::TrustStore::load_from(
+            std::path::Path::new("/tmp/bnote-mcp-probe"),
+            None,
+        );
+        let rows = probe_all(&servers, &["off".to_string()], &sources, &trust, true).await;
+        let row = |name: &str| rows.iter().find(|r| r.name == name).expect(name);
+        assert_eq!(row("live").state, "connected");
+        assert_eq!(row("live").tools, 1);
+        assert_eq!(row("live").scope, "user");
+        assert_eq!(row("dead").state, "error");
+        assert!(row("dead").error.is_some());
+        assert_eq!(row("dead").scope, "project");
+        assert_eq!(row("off").state, "disabled");
+        assert!(!row("off").enabled);
+        assert_eq!(row("off").scope, "local");
+        let seen = seen.lock().map(|g| g.clone()).unwrap_or_default();
+        assert!(
+            !seen.is_empty(),
+            "a live server must be checked, the disabled one must not be started"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_probe_connects_nothing_when_the_mode_has_no_mcp_tool() {
+        use crate::agent::settings::{McpScope, McpSource};
+        let (url, seen) = fake_mcp_server().await;
+        let mut servers = std::collections::BTreeMap::new();
+        servers.insert(
+            "live".to_string(),
+            McpServerConfig::Http {
+                url,
+                headers: std::collections::BTreeMap::new(),
+                timeouts_ms: Some(5_000),
+            },
+        );
+        let mut sources = std::collections::BTreeMap::new();
+        sources.insert(
+            "live".to_string(),
+            McpSource {
+                scope: McpScope::User,
+                path: std::path::PathBuf::from("/v/settings.json"),
+            },
+        );
+        let trust = crate::agent::trust::TrustStore::load_from(
+            std::path::Path::new("/tmp/bnote-mcp-probe"),
+            None,
+        );
+        let rows = probe_all(&servers, &[], &sources, &trust, false).await;
+        assert_eq!(rows[0].state, "unused");
+        assert!(rows[0].enabled);
+        let seen = seen.lock().map(|g| g.clone()).unwrap_or_default();
+        assert!(seen.is_empty(), "no MCP tool, no connection: {seen:?}");
+    }
+
+    #[tokio::test]
+    async fn an_unapproved_project_server_is_reported_but_never_started() {
+        use crate::agent::settings::{McpScope, McpSource};
+        let (url, seen) = fake_mcp_server().await;
+        let mut servers = std::collections::BTreeMap::new();
+        servers.insert(
+            "repo".to_string(),
+            McpServerConfig::Http {
+                url,
+                headers: std::collections::BTreeMap::new(),
+                timeouts_ms: Some(5_000),
+            },
+        );
+        let mut sources = std::collections::BTreeMap::new();
+        sources.insert(
+            "repo".to_string(),
+            McpSource {
+                scope: McpScope::Project,
+                path: std::path::PathBuf::from("/p/.mcp.json"),
+            },
+        );
+        let tag = format!("bnote-mcp-untrusted-{}", std::process::id());
+        let home = std::env::temp_dir().join(&tag);
+        let trust =
+            crate::agent::trust::TrustStore::load_from(&home, Some(std::path::Path::new("/p")));
+        let rows = probe_all(&servers, &[], &sources, &trust, true).await;
+        assert_eq!(rows[0].state, "untrusted");
+        assert!(!rows[0].trusted);
+        let seen = seen.lock().map(|g| g.clone()).unwrap_or_default();
+        assert!(
+            seen.is_empty(),
+            "an unapproved server must not be spawned: {seen:?}"
+        );
     }
 
     #[tokio::test]
