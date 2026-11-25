@@ -66,6 +66,9 @@ ignore = "0.4"
 # scraper→regex),声明为直接依赖只是引用,不新增构建产物。
 globset = "0.4"
 regex = "1"
+# 写工具前必须读过该文件、且读后未被外部改动(agent/file_state.rs):按路径
+# 记住读取时的 mtime,条目数有上限。只存状态不存内容,故无需字节上限。
+lru = "0.16"
 
 # 代码面板底部的集成终端(src/term):需要真 PTY,管道式的 tokio::process 给不了
 # 作业控制、行编辑和光标控制。仿真在前端的 xterm.js,Rust 只负责会话与字节流。

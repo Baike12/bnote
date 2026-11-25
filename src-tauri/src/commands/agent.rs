@@ -223,6 +223,7 @@ pub async fn agent_start_session(
         shell: Arc::new(ShellCwd::new()),
         bg: Arc::new(BgRegistry::new()),
         read_paths: std::sync::Mutex::new(Vec::new()),
+        files: Arc::new(crate::agent::file_state::FileStateCache::new()),
         extra_roots,
         invest_scope: invest_scope.clone(),
     });

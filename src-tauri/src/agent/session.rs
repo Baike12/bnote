@@ -2324,6 +2324,10 @@ impl Session {
             shell: Arc::new(ShellCwd::new()),
             bg: Arc::new(BgRegistry::new()),
             read_paths: Mutex::new(Vec::new()),
+            // A subagent starts with an empty read state on purpose: it does
+            // not inherit the parent transcript, so it has not seen the files
+            // the parent read and must Read them itself before writing.
+            files: Arc::new(super::file_state::FileStateCache::new()),
             extra_roots: Vec::new(),
             invest_scope: self.ctx.invest_scope.clone(),
         });

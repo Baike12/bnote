@@ -8,9 +8,20 @@ use crate::commands::normalize;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::SystemTime;
 
+use super::file_state::{FileState, FileStateCache};
 use super::shell::{BgRegistry, ShellCwd};
 use super::types::InlineImage;
+
+/// Files above this size must be read with `offset`/`limit`: reading one into
+/// memory only to truncate the result at [`MAX_RESULT_BYTES`] wastes both. 256
+/// KB is Claude Code's default read cap.
+const MAX_READ_BYTES: u64 = 256 * 1024;
+
+/// The Read tool's output cap, in bytes of formatted text (~40k ASCII
+/// characters). Long files are Read in ranges.
+const MAX_RESULT_BYTES: usize = 40_000;
 
 /// Tool execution result. Text tools only carry `text`; a rich-output tool
 /// (currently only preview_html) may attach a rendered screenshot, which the
@@ -56,6 +67,11 @@ pub struct ToolContext {
     /// Files this session read since the last request. The session uses them to
     /// load nested instruction files (`nested_memory`), the way CC does.
     pub read_paths: std::sync::Mutex<Vec<PathBuf>>,
+    /// What the model has read in this session: path → (mtime, range). Write
+    /// and Edit gate on it; Read records into it. Session-owned, never shared
+    /// between a parent and its subagents — a child that was spawned without
+    /// the parent's transcript has not seen those tool results either.
+    pub files: Arc<FileStateCache>,
     /// Extra writable roots from `settings.permissions.additionalDirectories`.
     pub extra_roots: Vec<PathBuf>,
     /// The invest session's scope (`stock:600519` / `sector:801010`). The
@@ -89,6 +105,64 @@ impl ToolContext {
             .lock()
             .map(|mut paths| std::mem::take(&mut *paths))
             .unwrap_or_default()
+    }
+
+    /// Cache key for a file: symlinked spellings of the same file share one
+    /// entry. A path that does not exist yet keeps its lexical form; Write
+    /// records it only after the file exists.
+    fn cache_key(path: &Path) -> PathBuf {
+        path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
+    }
+
+    /// The write gate shared by Write and Edit: an existing file must have been
+    /// Read in this session and must not have changed on disk since. `Ok(None)`
+    /// means the file does not exist; creating it needs no prior Read.
+    ///
+    /// Bash writes are covered without a hook: the next Write/Edit compares the
+    /// disk mtime against the recorded one and refuses.
+    async fn writable_mtime(&self, path: &Path) -> Result<Option<SystemTime>, String> {
+        let meta = match tokio::fs::metadata(path).await {
+            Ok(meta) => meta,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(format!("cannot stat {}: {e}", path.display())),
+        };
+        let mtime = meta
+            .modified()
+            .map_err(|e| format!("cannot read the mtime of {}: {e}", path.display()))?;
+        let Some(state) = self.files.get(&Self::cache_key(path)) else {
+            return Err(format!(
+                "{} has not been read in this session: Read it before writing",
+                path.display()
+            ));
+        };
+        if mtime > state.mtime {
+            return Err(format!(
+                "{} changed on disk after it was read (by the user, a formatter, or a shell command): Read it again before writing",
+                path.display()
+            ));
+        }
+        Ok(Some(mtime))
+    }
+
+    /// Records a file the tool just wrote, so the next Write/Edit needs no new
+    /// Read and a following Read re-sends the new content instead of a stub.
+    ///
+    /// A failed stat is ignored on purpose: the write already succeeded, and
+    /// dropping the record only forces the model to Read again (the safe
+    /// direction). Returning an error here would report a false write failure.
+    async fn note_written(&self, path: &Path) {
+        if let Ok(meta) = tokio::fs::metadata(path).await {
+            if let Ok(mtime) = meta.modified() {
+                self.files.record(
+                    &Self::cache_key(path),
+                    FileState {
+                        mtime,
+                        offset: None,
+                        limit: None,
+                    },
+                );
+            }
+        }
     }
 
     /// Resolves a tool-supplied path: absolute paths pass through; relative
@@ -232,7 +306,7 @@ pub fn tool_schemas() -> &'static [(&'static str, &'static str, Value)] {
     SCHEMAS.get_or_init(|| vec![
     (
         "Read",
-        "Reads a file from the local filesystem. Results are returned in cat -n format with line numbers starting at 1, truncated at ~2000 lines. Paths are relative to the working directory or absolute. You must read a file before editing it.",
+        "Reads a file from the local filesystem. Results are returned in cat -n format with line numbers starting at 1, truncated at ~2000 lines. Paths are relative to the working directory or absolute. You must read a file before editing it. Repeating the same offset/limit on a file that has not changed returns a short note instead of the content. Files above 256 KB must be read in ranges (pass limit).",
         json!({
             "type": "object",
             "properties": {
@@ -245,7 +319,7 @@ pub fn tool_schemas() -> &'static [(&'static str, &'static str, Value)] {
     ),
     (
         "Write",
-        "Writes a file to the local filesystem, overwriting it if it exists (parent directories are created). You MUST use the Read tool on the file in this conversation before overwriting it. NEVER create documentation files (*.md) or README files unless explicitly requested.",
+        "Writes a file to the local filesystem, overwriting it if it exists (parent directories are created). Overwriting an existing file requires that Read opened it in this session and that it has not changed on disk since; otherwise the write fails. NEVER create documentation files (*.md) or README files unless explicitly requested.",
         json!({
             "type": "object",
             "properties": {
@@ -257,7 +331,7 @@ pub fn tool_schemas() -> &'static [(&'static str, &'static str, Value)] {
     ),
     (
         "Edit",
-        "Performs exact string replacement in a file. You must use the Read tool at least once in the conversation before editing. The edit FAILS if old_string is not unique — include more surrounding context to make it unique, or use replace_all. To replace many occurrences at once set replace_all to true.",
+        "Performs exact string replacement in a file. You must use the Read tool on the file in this session before editing, and the edit fails if the file changed on disk since that read. The edit FAILS if old_string is not unique — include more surrounding context to make it unique, or use replace_all. To replace many occurrences at once set replace_all to true.",
         json!({
             "type": "object",
             "properties": {
@@ -583,24 +657,11 @@ async fn execute_text(
         "Read" => {
             let path = path_param();
             match ctx.resolve(&path) {
-                Ok(p) => match tokio::fs::read_to_string(&p).await {
-                    Ok(content) => {
-                        ctx.note_read(&p);
-                        // cat -n format (CC's Read): line numbers starting at 1,
-                        // honoring offset/limit when given.
-                        let lines: Vec<&str> = content.lines().collect();
-                        let offset = input["offset"].as_u64().unwrap_or(1).max(1) as usize;
-                        let limit = input["limit"].as_u64().map(|n| n as usize).unwrap_or(2000);
-                        let start = (offset - 1).min(lines.len());
-                        let end = (start + limit).min(lines.len());
-                        let mut out = String::new();
-                        for (i, line) in lines[start..end].iter().enumerate() {
-                            out.push_str(&format!("{:>6}\t{}\n", start + i + 1, line));
-                        }
-                        (true, truncate(&out, 40_000))
-                    }
-                    Err(e) => (false, format!("read failed: {}", e)),
-                },
+                Ok(p) => {
+                    let offset = input["offset"].as_u64().unwrap_or(1).max(1);
+                    let limit = input["limit"].as_u64();
+                    read_text(ctx, &p, offset, limit).await
+                }
                 Err(e) => (false, e),
             }
         }
@@ -612,14 +673,22 @@ async fn execute_text(
                     if let Err(e) = ctx.ensure_confined(&p, mode) {
                         return (false, e);
                     }
+                    if let Err(e) = ctx.writable_mtime(&p).await {
+                        return (false, e);
+                    }
                     if let Some(parent) = p.parent() {
-                        let _ = tokio::fs::create_dir_all(parent).await;
+                        if let Err(e) = tokio::fs::create_dir_all(parent).await {
+                            return (false, format!("cannot create {}: {e}", parent.display()));
+                        }
                     }
                     match tokio::fs::write(&p, content).await {
-                        Ok(()) => (
-                            true,
-                            format!("wrote {} ({} bytes)", p.display(), content.len()),
-                        ),
+                        Ok(()) => {
+                            ctx.note_written(&p).await;
+                            (
+                                true,
+                                format!("wrote {} ({} bytes)", p.display(), content.len()),
+                            )
+                        }
                         Err(e) => (false, format!("write failed: {}", e)),
                     }
                 }
@@ -730,6 +799,9 @@ async fn execute_text(
                     if let Err(e) = ctx.ensure_confined(&p, mode) {
                         return (false, e);
                     }
+                    if let Err(e) = ctx.writable_mtime(&p).await {
+                        return (false, e);
+                    }
                     match tokio::fs::read_to_string(&p).await {
                         Ok(content) => {
                             let hits = content.matches(old).count();
@@ -744,15 +816,18 @@ async fn execute_text(
                                     content.replacen(old, new, 1)
                                 };
                                 match tokio::fs::write(&p, updated).await {
-                                    Ok(()) => (
-                                        true,
-                                        format!(
-                                            "edited {} ({} replacement{})",
-                                            p.display(),
-                                            if replace_all { hits } else { 1 },
-                                            if replace_all && hits > 1 { "s" } else { "" }
-                                        ),
-                                    ),
+                                    Ok(()) => {
+                                        ctx.note_written(&p).await;
+                                        (
+                                            true,
+                                            format!(
+                                                "edited {} ({} replacement{})",
+                                                p.display(),
+                                                if replace_all { hits } else { 1 },
+                                                if replace_all && hits > 1 { "s" } else { "" }
+                                            ),
+                                        )
+                                    }
                                     Err(e) => (false, format!("write failed: {}", e)),
                                 }
                             }
@@ -859,6 +934,86 @@ async fn execute_text(
         }
         _ => (false, format!("unknown tool: {}", name)),
     }
+}
+
+/// The Read tool: mtime-keyed dedupe, the byte guard, then `cat -n` output.
+///
+/// The state is recorded from the stat taken *before* the content, so a file
+/// that changes during the read is stored with the older mtime; the next
+/// Write/Edit then refuses it as stale instead of accepting content the model
+/// never saw.
+async fn read_text(
+    ctx: &ToolContext,
+    path: &Path,
+    offset: u64,
+    limit: Option<u64>,
+) -> (bool, String) {
+    let meta = match tokio::fs::metadata(path).await {
+        Ok(meta) => meta,
+        Err(e) => return (false, format!("read failed: {e}")),
+    };
+    let mtime = match meta.modified() {
+        Ok(mtime) => mtime,
+        Err(e) => {
+            return (
+                false,
+                format!(
+                    "read failed: cannot read the mtime of {}: {e}",
+                    path.display()
+                ),
+            );
+        }
+    };
+    // An unbounded read of a large file pulls the whole thing into memory only
+    // to cut the result short; make the model page through it instead.
+    if limit.is_none() && meta.len() > MAX_READ_BYTES {
+        return (
+            false,
+            format!(
+                "{} is {} bytes: Read it with offset and limit instead of in one result",
+                path.display(),
+                meta.len()
+            ),
+        );
+    }
+    let key = ToolContext::cache_key(path);
+    if let Some(state) = ctx.files.get(&key) {
+        if state.mtime == mtime && state.covers(offset, limit) {
+            return (
+                true,
+                format!(
+                    "{} is unchanged since the last Read in this session: the earlier content is still in the conversation",
+                    path.display()
+                ),
+            );
+        }
+    }
+    let content = match tokio::fs::read_to_string(path).await {
+        Ok(content) => content,
+        Err(e) => return (false, format!("read failed: {e}")),
+    };
+    ctx.note_read(path);
+    // cat -n format (CC's Read): line numbers starting at 1, honoring
+    // offset/limit when given (2000 lines when the model gave no limit).
+    let lines: Vec<&str> = content.lines().collect();
+    let start = (offset as usize - 1).min(lines.len());
+    let end = (start + limit.unwrap_or(2000) as usize).min(lines.len());
+    let mut out = String::new();
+    for (i, line) in lines[start..end].iter().enumerate() {
+        out.push_str(&format!("{:>6}\t{}\n", start + i + 1, line));
+    }
+    let truncated = out.len() > MAX_RESULT_BYTES;
+    ctx.files.record(
+        &key,
+        FileState {
+            mtime,
+            // A result cut by the output cap did not show the whole range, so
+            // a repeat must re-send it: recording no range makes `covers` false.
+            offset: (!truncated).then_some(offset),
+            limit,
+        },
+    );
+    (true, truncate(&out, MAX_RESULT_BYTES))
 }
 
 /// Very small DOM-based HTML→text (keeps block structure, drops scripts/styles).
@@ -1043,6 +1198,7 @@ mod tests {
             shell: Arc::new(crate::agent::shell::ShellCwd::new()),
             bg: Arc::new(crate::agent::shell::BgRegistry::new()),
             read_paths: std::sync::Mutex::new(Vec::new()),
+            files: Arc::new(FileStateCache::new()),
             extra_roots: Vec::new(),
             invest_scope: None,
         }
@@ -1084,6 +1240,8 @@ mod tests {
         let file = vault.join("post.html");
         std::fs::write(&file, "<h1>旧标题</h1>\n<p>正文</p>\n").unwrap();
         let c = ctx(&vault, &vault);
+        let out = run(&c, Mode::Auto, "Read", json!({"file_path": "post.html"})).await;
+        assert!(out.ok, "{}", out.text);
         let out = run(
             &c,
             Mode::Auto,
@@ -1106,6 +1264,8 @@ mod tests {
         let file = vault.join("post.md");
         std::fs::write(&file, "a b a").unwrap();
         let c = ctx(&vault, &vault);
+        let out = run(&c, Mode::Auto, "Read", json!({"file_path": "post.md"})).await;
+        assert!(out.ok, "{}", out.text);
         let out = run(
             &c,
             Mode::Auto,
@@ -1285,6 +1445,182 @@ mod tests {
         // A non-.html file is rejected
         let out = run(&c, Mode::Auto, "preview_html", json!({"path": "page.md"})).await;
         assert!(!out.ok && out.text.contains(".html"), "{}", out.text);
+    }
+
+    /// Reads through the tool, so the session records the state a later
+    /// Write/Edit gates on.
+    async fn read(c: &ToolContext, path: &str) -> ToolOutput {
+        run(c, Mode::Auto, "Read", json!({"file_path": path})).await
+    }
+
+    /// Rewrites a file behind the agent's back (the user, a formatter, or a
+    /// shell command). Sleeps first: the gate compares mtimes, and a
+    /// coarse-grained filesystem would otherwise report the two writes as one.
+    fn external_write(path: &Path, content: &str) {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(path, content).unwrap();
+    }
+
+    #[tokio::test]
+    async fn write_refuses_an_existing_file_that_was_not_read() {
+        let vault = std::env::temp_dir().join("bnote-write-gate-test-1");
+        let _ = std::fs::remove_dir_all(&vault);
+        std::fs::create_dir_all(&vault).unwrap();
+        let file = vault.join("note.md");
+        std::fs::write(&file, "user text").unwrap();
+        let c = ctx(&vault, &vault);
+        let out = run(
+            &c,
+            Mode::Auto,
+            "Write",
+            json!({"file_path": "note.md", "content": "agent text"}),
+        )
+        .await;
+        assert!(
+            !out.ok && out.text.contains("has not been read"),
+            "{}",
+            out.text
+        );
+        assert_eq!(
+            std::fs::read_to_string(&file).unwrap(),
+            "user text",
+            "the refused write must not touch the file"
+        );
+        let out = read(&c, "note.md").await;
+        assert!(out.ok, "{}", out.text);
+        let out = run(
+            &c,
+            Mode::Auto,
+            "Write",
+            json!({"file_path": "note.md", "content": "agent text"}),
+        )
+        .await;
+        assert!(out.ok, "{}", out.text);
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "agent text");
+    }
+
+    #[tokio::test]
+    async fn write_and_edit_refuse_a_file_changed_since_the_read() {
+        let vault = std::env::temp_dir().join("bnote-write-gate-test-2");
+        let _ = std::fs::remove_dir_all(&vault);
+        std::fs::create_dir_all(&vault).unwrap();
+        let file = vault.join("note.md");
+        std::fs::write(&file, "one").unwrap();
+        let c = ctx(&vault, &vault);
+        let out = read(&c, "note.md").await;
+        assert!(out.ok, "{}", out.text);
+        external_write(&file, "two");
+        let out = run(
+            &c,
+            Mode::Auto,
+            "Edit",
+            json!({"file_path": "note.md", "old_string": "two", "new_string": "three"}),
+        )
+        .await;
+        assert!(
+            !out.ok && out.text.contains("changed on disk"),
+            "{}",
+            out.text
+        );
+        let out = run(
+            &c,
+            Mode::Auto,
+            "Write",
+            json!({"file_path": "note.md", "content": "x"}),
+        )
+        .await;
+        assert!(
+            !out.ok && out.text.contains("changed on disk"),
+            "{}",
+            out.text
+        );
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "two");
+        // Reading again is the documented recovery: the gate then opens.
+        let out = read(&c, "note.md").await;
+        assert!(out.ok, "{}", out.text);
+        let out = run(
+            &c,
+            Mode::Auto,
+            "Edit",
+            json!({"file_path": "note.md", "old_string": "two", "new_string": "three"}),
+        )
+        .await;
+        assert!(out.ok, "{}", out.text);
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "three");
+    }
+
+    #[tokio::test]
+    async fn a_file_the_agent_wrote_can_be_edited_without_reading_it_again() {
+        let vault = std::env::temp_dir().join("bnote-write-gate-test-3");
+        let _ = std::fs::remove_dir_all(&vault);
+        std::fs::create_dir_all(&vault).unwrap();
+        let c = ctx(&vault, &vault);
+        let out = run(
+            &c,
+            Mode::Auto,
+            "Write",
+            json!({"file_path": "fresh.md", "content": "a b"}),
+        )
+        .await;
+        assert!(out.ok, "{}", out.text);
+        let out = run(
+            &c,
+            Mode::Auto,
+            "Edit",
+            json!({"file_path": "fresh.md", "old_string": "b", "new_string": "c"}),
+        )
+        .await;
+        assert!(out.ok, "{}", out.text);
+        assert_eq!(
+            std::fs::read_to_string(vault.join("fresh.md")).unwrap(),
+            "a c"
+        );
+    }
+
+    #[tokio::test]
+    async fn reading_the_same_range_twice_returns_a_stub() {
+        let vault = std::env::temp_dir().join("bnote-read-dedupe-test");
+        let _ = std::fs::remove_dir_all(&vault);
+        std::fs::create_dir_all(&vault).unwrap();
+        let file = vault.join("note.md");
+        std::fs::write(&file, "alpha\nbeta\n").unwrap();
+        let c = ctx(&vault, &vault);
+        let out = read(&c, "note.md").await;
+        assert!(out.ok && out.text.contains("alpha"), "{}", out.text);
+        let out = read(&c, "note.md").await;
+        assert!(
+            out.ok && out.text.contains("unchanged since the last Read"),
+            "{}",
+            out.text
+        );
+        // A changed file is read again in full, not stubbed.
+        external_write(&file, "gamma\n");
+        let out = read(&c, "note.md").await;
+        assert!(out.ok && out.text.contains("gamma"), "{}", out.text);
+    }
+
+    #[tokio::test]
+    async fn a_large_file_must_be_read_in_ranges() {
+        let vault = std::env::temp_dir().join("bnote-read-size-test");
+        let _ = std::fs::remove_dir_all(&vault);
+        std::fs::create_dir_all(&vault).unwrap();
+        let file = vault.join("big.txt");
+        std::fs::write(&file, "x".repeat(300 * 1024)).unwrap();
+        let c = ctx(&vault, &vault);
+        let out = read(&c, "big.txt").await;
+        assert!(
+            !out.ok && out.text.contains("offset and limit"),
+            "{}",
+            out.text
+        );
+        let out = run(
+            &c,
+            Mode::Auto,
+            "Read",
+            json!({"file_path": "big.txt", "limit": 3}),
+        )
+        .await;
+        assert!(out.ok, "{}", out.text);
     }
 
     #[tokio::test]

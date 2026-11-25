@@ -5,6 +5,7 @@ pub mod cancel;
 pub mod cassette;
 pub mod concurrency;
 pub mod defs;
+pub mod file_state;
 pub mod home;
 pub mod hooks;
 pub mod instructions;
