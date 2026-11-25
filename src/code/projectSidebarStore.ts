@@ -15,6 +15,7 @@ import { codeApi } from "./api";
 import {
   checkoutsOf,
   groupRecentProjects,
+  isAuxiliarySession,
   mergeGroupSessions,
   orderSessions,
   parsePinned,
@@ -160,11 +161,22 @@ async function loadCheckouts(root: string, isGit: boolean): Promise<ProjectCheck
   return [{ path: root, name: projectLabel(root), branch: null, isMain: true }];
 }
 
+/**
+ * Read each checkout's saved sessions for the list.
+ *
+ * Auxiliary sessions are dropped here: they belong to the session they were
+ * forked from and are reached from its header picker, so a row of their own
+ * would only duplicate that entry (and take one of the five visible slots).
+ * The archive list reads its own records and still shows every file — an
+ * archived auxiliary session must stay restorable and deletable.
+ */
 async function loadSessions(checkouts: readonly ProjectCheckout[]): Promise<CheckoutSessions[]> {
   const batches = await Promise.all(
     checkouts.map(async (checkout) => ({
       workdir: checkout.path,
-      sessions: await homeApi.sessionsList(checkout.path).catch((): SavedSessionMeta[] => []),
+      sessions: (
+        await homeApi.sessionsList(checkout.path).catch((): SavedSessionMeta[] => [])
+      ).filter((session) => !isAuxiliarySession(session)),
     })),
   );
   return batches;
