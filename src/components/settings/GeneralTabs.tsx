@@ -9,6 +9,12 @@ import {
   MIN_TYPEWRITER_POSITION,
   normalizeTypewriterPosition,
 } from "@/editor/typewriterPosition";
+import {
+  DRAWING_DEFAULT_HEIGHT,
+  DRAWING_DEFAULT_WIDTH,
+  DRAWING_MIN_HEIGHT,
+  DRAWING_MIN_WIDTH,
+} from "@/app/drawingWindow";
 import { SettingsCard, Row, RangeControl, SettingsSelect, Toggle } from "./primitives";
 import type { CodeVimMode } from "@/state/codeVim";
 
@@ -180,6 +186,49 @@ export function EditorTab() {
               min={12}
               max={28}
               onChange={(v) => patch({ fontSize: v })}
+              format={(v) => `${v}px`}
+            />
+          }
+        />
+      </SettingsCard>
+      <SettingsCard
+        title="画布窗口"
+        desc="⌘D 打开的 Excalidraw 画布是一个浮窗：拖标题栏移动，拖边缘或四角调整大小，松手即记住。这里设置的是它打开时的默认大小；屏幕放不下时按屏幕缩小显示，不会改掉这个值。"
+        actions={
+          <button
+            className="btn"
+            onClick={() =>
+              patch({ drawingWidth: DRAWING_DEFAULT_WIDTH, drawingHeight: DRAWING_DEFAULT_HEIGHT })
+            }
+          >
+            恢复默认大小
+          </button>
+        }
+      >
+        <Row
+          label="默认宽度"
+          desc={`${DRAWING_MIN_WIDTH}px 起，屏幕放不下时按屏幕缩小显示`}
+          control={
+            <RangeControl
+              value={settings.drawingWidth}
+              min={DRAWING_MIN_WIDTH}
+              max={2400}
+              step={20}
+              onChange={(v) => patch({ drawingWidth: v })}
+              format={(v) => `${v}px`}
+            />
+          }
+        />
+        <Row
+          label="默认高度"
+          desc={`${DRAWING_MIN_HEIGHT}px 起，屏幕放不下时按屏幕缩小显示`}
+          control={
+            <RangeControl
+              value={settings.drawingHeight}
+              min={DRAWING_MIN_HEIGHT}
+              max={1600}
+              step={20}
+              onChange={(v) => patch({ drawingHeight: v })}
               format={(v) => `${v}px`}
             />
           }

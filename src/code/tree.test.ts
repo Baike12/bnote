@@ -233,11 +233,26 @@ describe("searchFilesByName (quick open)", () => {
     expect(hits.map((h) => h.path)).toEqual(["src/app.ts", "src/my-app.tsx", "src/app-router.ts"]);
   });
 
-  it("only file names are matched, directories do not take part", () => {
-    // The directory "src" is not a candidate itself; no **file name** contains
-    // src.
-    expect(searchFilesByName(entries, "src")).toEqual([]);
+  it("a folder name contributes the files under it", () => {
+    // The directory "src" is not a candidate itself, but its name is how the
+    // user jumps into it.
+    expect(searchFilesByName(entries, "src").map((h) => h.path)).toEqual([
+      "src/app-router.ts",
+      "src/app.ts",
+      "src/helper.ts",
+      "src/my-app.tsx",
+    ]);
     expect(searchFilesByName(entries, "helper").map((h) => h.path)).toEqual(["src/helper.ts"]);
+  });
+
+  it("a folder prefix plus a name prefix finds the file (`abef` → `abcd/efg.ts`)", () => {
+    const nested = [entry("abcd/efg.ts"), entry("xabex/efg.ts"), entry("zzz/no.ts")];
+    expect(searchFilesByName(nested, "abef").map((h) => h.path)).toEqual([
+      "abcd/efg.ts",
+      "xabex/efg.ts",
+    ]);
+    // A folder part does not have to start the folder to be found.
+    expect(searchFilesByName(nested, "cdef").map((h) => h.path)).toEqual(["abcd/efg.ts"]);
   });
 
   it("a subsequence matches too (abc → a_b_c)", () => {

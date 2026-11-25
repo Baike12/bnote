@@ -137,7 +137,7 @@ cargo test --manifest-path src-tauri/Cargo.toml   # Rust 测试
 ### 命令、导航与工作区
 
 - **命令面板**：模糊搜索全部命令；新增功能只需注册一个 `CommandDef`（`src/commands/registry.ts`）
-- **快速跳转**：按文件名或文件夹名搜索，空格分隔多词按 AND 匹配；空输入显示最近打开列表
+- **快速跳转**：按文件名或文件夹名搜索，空格分隔多词按 AND 匹配，一条查询可跨文件夹边界（文件夹部分在前，`abef` 找到 `abcd/efg.md`）；空输入显示最近打开列表
 - **插入链接**：光标处补全笔记；当前行已有链接时，同一个快捷键改为跳转；重名笔记自动写成 Vault 相对路径
 - **链接回跳**：沿内部链接的跳转历史逐层返回，不影响普通文件打开
 - **快速添加**：预设「名称 + 目标文件夹」命令，一键创建笔记；不存在的子目录与重名文件自动处理
@@ -255,6 +255,7 @@ cargo test --manifest-path src-tauri/Cargo.toml   # Rust 测试
 ### 画布与附件
 
 - 通过命令面板打开 Excalidraw 画布；画布有独立键位，切换文件时先保存收尾
+- 画布是一个圆角浮窗：拖标题栏移动，拖边缘或四角调整大小（松手即记住）；默认大小在设置页设置
 - 新建画布保存为 `<name>.excalidraw`，同时导出同名 PNG 供 Markdown 预览
 - 兼容 Obsidian Excalidraw 插件的 `.excalidraw.md`（含 `compressed-json`）
 - 回到来源笔记时，新画布以 `![[...]]` 插入原光标位置
@@ -275,7 +276,7 @@ Agent 按 Claude Code 的结构实现：定义与提示词编译进二进制。�
 
 | 模式 | 模型 | MCP | 技能 | 指令 |
 | --- | --- | --- | --- | --- |
-| 编码 | 共用 | 自己的 `mcpServers` | 模式目录 + 项目 `.agents/skills` + `~/.agents/skills` | 模式目录，再叠加代码仓库层级 |
+| 编码 | 共用 | 自己的 `mcpServers` | 模式目录 + 从项目到 git 根每层的 `.agents/skills` + `~/.agents/skills` | 模式目录，再叠加代码仓库层级 |
 | 创作 | 共用 | 自己的 `mcpServers` | 只读模式目录 | 只读模式目录 |
 | 学习 | 共用 | 无（不注册工具） | 无 | 只读模式目录 |
 
@@ -290,14 +291,14 @@ Agent 按 Claude Code 的结构实现：定义与提示词编译进二进制。�
 ### 指令文件（AGENTS.md）
 
 - **每种模式**读自己的 `<仓库>/.bnote/agents/<模式>/AGENTS.md` 与 `rules/*.md`（首次打开仓库时从旧的家目录根与 `.bnote/AGENTS.md` 复制一次）
-- **编码会话**再读代码仓库从根到工作目录的 `AGENTS.md` / `CLAUDE.md` / `.bnote/AGENTS.md` / `.bnote/rules/*.md` / `AGENTS.local.md`
+- **编码会话**再读代码仓库从根到工作目录的 `AGENTS.md` / `.bnote/AGENTS.md` / `.bnote/rules/*.md` / `AGENTS.local.md`;不读 `CLAUDE.md`(`AGENTS.md` 是 Codex、Zed、grok-build 都读的文件,两个都读等于同一份指令付两次 token)
 - **学习与创作会话**不读取任何代码仓库的指令文件
 - 支持 `@import`（最多 5 层，跳过代码块与注释），`settings.instructionsExcludes` 用 glob 排除
 - 读文件时，如果该文件目录到项目根之间还有没加载过的 `AGENTS.md`，会作为 system-reminder 补进下一轮对话
 
 ### 工具、权限与计划模式
 
-- **工具**：`read_file` / `write_file` / `edit_file` / `list_files` / `glob` / `grep` / `bash`（含 `bash_output`、`bash_kill`）、`todo`、`task`、`skill`、`mcp`、`task_*`、`ask_user_question`、`send_message`、`EnterPlanMode` / `ExitPlanMode`
+- **工具**：`read_file` / `write_file` / `edit_file` / `list_files` / `glob` / `grep` / `bash`（含 `bash_output`、`bash_kill`）、`todo`、`task`、`skill`、每个已连接 MCP 服务器的工具（名字是 `mcp__<server>__<tool>`）、`task_*`、`ask_user_question`、`send_message`、`EnterPlanMode` / `ExitPlanMode`
 - **子代理**：`general-purpose`（全工具）、`explore`（只读）、`plan`（只读计划）、`fork`（继承当前上下文），可并行、可后台，记录落在 `.bnote/projects/<项目键>/<会话>/subagents/`
 - **权限四档**（盾牌菜单）：变更前确认 / 自主模式 / 完全访问 / 计划模式；设置文件里的 `permissions.allow / ask / deny` 规则先于档位判定，支持 `Bash(git push:*)`、路径 glob 这类写法
 - **计划模式**：只读调研，写文件与有副作用的命令一律拒绝；`ExitPlanMode` 把计划写进 `.bnote/plans/<slug>.md` 并弹批准卡，批准后才恢复原档位
@@ -305,17 +306,17 @@ Agent 按 Claude Code 的结构实现：定义与提示词编译进二进制。�
 
 ### 设置分层、hooks 与输出风格
 
-- **逐层合并**：模式的 `settings.json`，再叠加（仅编码）`<代码项目>/.bnote/settings.json` 与 `settings.local.json`；数组拼接去重、对象深合并、标量后者覆盖。字段：`mcpServers`、`disabledMcpServers`、`skillDirs`、`disabledSkills`、`env`、`permissions`、`hooks`、`outputStyle`、`instructionsExcludes`、`cleanupPeriodDays`、`plansDirectory`、`autoMemoryEnabled`、`autoMemoryDirectory`
-- **MCP 按模式隔离**：服务器列表写在本模式的 `settings.json`；设置页的开关写进 `disabledMcpServers`，停用但不删除配置
+- **逐层合并**：模式的 `settings.json`，再叠加（仅编码）`<代码项目>/.mcp.json`、`<代码项目>/.bnote/settings.json` 与 `settings.local.json`；数组拼接去重、对象深合并、标量后者覆盖。`.mcp.json` 只贡献 `mcpServers`，其他 agent 也会写的这个文件不能给 bnote 注入权限或 hooks。字段：`mcpServers`、`disabledMcpServers`、`skillDirs`、`disabledSkills`、`env`、`permissions`、`hooks`、`outputStyle`、`instructionsExcludes`、`cleanupPeriodDays`、`plansDirectory`、`autoMemoryEnabled`、`autoMemoryDirectory`
+- **MCP 分用户级与项目级**：用户级写在仓库里本模式的 `settings.json`，所有项目共用；编码模式再合并 `<代码项目>/.mcp.json`（跨 agent 共用，`type` 可省略：有 `command` 即 stdio，有 `url` 即 HTTP）、`<代码项目>/.bnote/settings.json`（随仓库提交）与 `settings.local.json`（仅本机），同名以后者为准。项目级服务器要批准后才启动：vault 里的 `trusted-mcp.json` 记的是配置摘要，改了配置就要重新批准，批准前连通检查也不会 spawn 它。设置页按作用域分组，每行显示一次真实连接检查的结果（连接、`tools/list`、断开）与工具数；开关写进 `disabledMcpServers`，停用但不删除配置。MCP 服务器的工具和内置工具一样写进请求，排在它们后面，模型直接按 `mcp__<server>__<tool>` 调用；缓存断点打在最后一个内置工具上，服务器变化只重发 MCP 这一段。目录按限定名排序、去重，描述截断到 2 KB，未变化的服务器每次产生完全相同的字节。流式 HTTP 服务器忘掉会话时（空闲清理后返回 `404 Session not found`）会重新握手、重读目录并把那次调用重试一次
 - **hooks**：`PreToolUse`、`PostToolUse`、`PostToolUseFailure`、`UserPromptSubmit`、`SessionStart`、`Stop`、`SubagentStart`、`SubagentStop`、`PreCompact`、`PostCompact`。`sh -c` 执行，stdin 收 JSON，默认 60 秒超时；可返回 `permissionDecision`、`additionalContext`、`updatedInput`，非零退出可以拦住工具
 - **输出风格**：内置 default / Explanatory / Learning，自定义文件放 `<模式目录>/output-styles/*.md` 与（编码）`<代码项目>/.bnote/output-styles/*.md`（frontmatter：`name` / `description` / `keep-coding-instructions`）；`settings.outputStyle` 选中后注入动态段
-- **设置页随模式变化**：`设置 → Agent` 在编码模式是 `模型 | MCP | 技能 | AGENTS.md | 高级`，创作模式是 `模型 | MCP | 技能 | AGENTS.md`，学习模式只有 `模型 | AGENTS.md`。每个页面直接读写真实文件（配置目录与路径覆盖、settings.json 编辑器与解析状态、逐个 MCP 开关）；弹窗高度固定，内容多了滚动而不是改变窗口大小
+- **设置页随模式变化**：`设置 → Agent` 在编码模式是 `模型 | MCP | 技能 | AGENTS.md | 高级`，创作模式是 `模型 | MCP | 技能 | AGENTS.md`，学习模式只有 `模型 | AGENTS.md`。每个页面直接读写真实文件（配置目录与路径覆盖、settings.json 编辑器与解析状态、逐个 MCP 开关）；弹窗高度固定，内容多了滚动而不是改变窗口大小。MCP 页按用户级 / 项目级 / 项目本地分组，显示每个服务器的连通状态，项目级服务器在连接前给出批准按钮，并编辑所选作用域的文件
 
 ### 记忆、历史与技能
 
 - **自动记忆**：`.bnote/projects/<项目键>/memory/MEMORY.md` 是唯一索引，一条记忆一个文件，`[[name]]` 互链；编码会话每轮注入索引与记忆行为提示
 - **提示词历史**：每次发送追加 `.bnote/history.jsonl`；输入框为空时按 `↑` 召回本项目的历史提示词，`↓` 往回走，发送后清空
-- **技能**：编码模式扫描 `<仓库>/.bnote/agents/coding/skills/`、`<代码项目>/.agents/skills/`、`~/.agents/skills/`（Agent Skills 约定）与 `skillDirs`；创作模式只扫描自己的目录；同名技能保留优先级最高的一份，设置页按来源分组展示
+- **技能**：编码模式扫描 `<仓库>/.bnote/agents/coding/skills/`、从代码项目到 git 根每层的 `.agents/skills/`（近的优先）、`~/.agents/skills/`（Agent Skills 约定）与 `skillDirs`；创作模式只扫描自己的目录；同名技能保留优先级最高的一份，设置页按来源分组展示。输入框的 `/` 选择器按名称模糊匹配（首字母串、错字也能命中，不再只认子串），打开时切到英文输入法，选中后交还中文
 
 ### 家目录布局
 
@@ -325,6 +326,7 @@ Agent 的家就是当前仓库的 `.bnote`（下面这块就在笔记库里面�
 ```text
 <仓库>/.bnote/
 ├── agent.json            协议 / 模型 / API Key / 各模式目录覆盖
+├── trusted-mcp.json      已批准的项目级 MCP 服务器（项目路径 → 名称 → 摘要）
 ├── history.jsonl         提示词历史
 ├── plans/<slug>.md       计划模式的产出
 ├── tasks/<list>/         待办的落盘状态
@@ -392,7 +394,8 @@ Agent 的家就是当前仓库的 `.bnote`（下面这块就在笔记库里面�
 | `.bnote/snippets.js` | 仓库级 LaTeX 片段；存在时取代内置片段 |
 | `.bnote/agents/<模式>/` | 该模式的配置目录：`settings.json`、`AGENTS.md`、`skills/`、`rules/`、`output-styles/` |
 | `.bnote/settings.json`、`.bnote/settings.local.json` | 代码项目的 agent 设置（叠加在编码模式目录之上） |
-| `.agents/skills/` | 代码项目的技能（Agent Skills 约定） |
+| `.mcp.json` | 代码项目的 MCP 服务器，其他 agent 也读这个文件（先于 `.bnote/settings.json` 合并） |
+| `.agents/skills/` | 代码项目的技能（Agent Skills 约定），从项目到 git 根每层都扫描 |
 | `.bnote/lsp.json` | 语言服务器启动命令（跟着仓库走） |
 | `.bnote/projects-manager/<项目名>.md` | 项目待办清单 |
 | `.bnote/materials/index.json` | 材料登记表：材料身份 → 目录名 |

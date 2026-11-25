@@ -30,14 +30,18 @@ vi.mock("@/lib/tauri", () => ({
 
 import {
   imeApply,
+  imeBeginSkillSearch,
   imeBeginTransientChinese,
+  imeEndSkillSearch,
   imeEndTransientChinese,
   imeOnChineseFocus,
+  imeOnComposerFocus,
   imeOnWindowBlur,
   imeOnWindowFocus,
   imeSyncToEditor,
   imeYield,
   insertRegionWantsEnglishAt,
+  skillSearchActive,
 } from "./imeSwitch";
 import { EditorState } from "@codemirror/state";
 import { useAppStore } from "@/state/appStore";
@@ -72,6 +76,7 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
+  imeEndSkillSearch();
   imeYield();
   // Settle both the hand-back call and its trailing chain: one unsettled
   // setInputSource leaves `switching` stuck at true, so the next test's switch
@@ -447,6 +452,73 @@ describe("annotation input focus", () => {
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+});
+
+/**
+ * The `/` skill picker: skill names are ASCII, so the composer switches to
+ * English while the picker is open and back to its writing source (Chinese)
+ * once a name is picked or the picker closes.
+ */
+describe("the slash skill picker's English scope", () => {
+  const ZH = "com.apple.inputmethod.SCIM";
+  const EN = "com.apple.keylayout.ABC";
+  const stubChineseField = () =>
+    vi.stubGlobal("document", {
+      activeElement: { hasAttribute: (n: string) => n === "data-ime-chinese" },
+    });
+
+  it("opening the picker switches an already-Chinese composer to English", async () => {
+    imeOnChineseFocus(true);
+    await drain();
+    expect(setInputSource).toHaveBeenLastCalledWith(ZH);
+    imeBeginSkillSearch();
+    await drain();
+    expect(setInputSource).toHaveBeenLastCalledWith(EN);
+  });
+
+  it("the composer's focus handler does not take English back while the picker is open", async () => {
+    imeBeginSkillSearch();
+    await drain();
+    imeOnComposerFocus(true);
+    await drain();
+    expect(setInputSource).toHaveBeenLastCalledWith(EN);
+    expect(setInputSource.mock.calls.map(([source]) => source)).not.toContain(ZH);
+  });
+
+  it("closing the picker hands the field back to Chinese", async () => {
+    stubChineseField();
+    try {
+      imeBeginSkillSearch();
+      await drain();
+      expect(setInputSource).toHaveBeenLastCalledWith(EN);
+      imeEndSkillSearch();
+      await drain();
+      expect(setInputSource).toHaveBeenLastCalledWith(ZH);
+      expect(skillSearchActive()).toBe(false);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("a Chinese focus check scheduled before the picker opened does not re-send Chinese", async () => {
+    stubChineseField();
+    try {
+      imeOnComposerFocus(true); // Chinese intent plus its 120 ms settle check
+      imeBeginSkillSearch();
+      await drain();
+      await new Promise((r) => setTimeout(r, 160));
+      await drain();
+      expect(setInputSource).toHaveBeenLastCalledWith(EN);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("ending without having opened the picker touches nothing", async () => {
+    imeEndSkillSearch();
+    await drain();
+    expect(setInputSource).not.toHaveBeenCalled();
   });
 });
 

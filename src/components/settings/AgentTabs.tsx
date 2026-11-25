@@ -6,6 +6,9 @@ import {
   type AgentMode,
   type AgentModePaths,
   type AgentOutputStyle,
+  type McpScope,
+  type McpServerStatus,
+  type McpStatusReport,
   type ModelSelection,
   type SkillInfo,
   type SkillSource,
@@ -24,6 +27,15 @@ import {
   type ProviderDraft,
 } from "./agentCatalogDraft";
 import { SettingsCard, Row, SettingsSelect, Toggle } from "./primitives";
+import {
+  effectiveServers,
+  scopesDisabling,
+  serversOf,
+  settingsObject,
+  withDisabled,
+  withServers,
+  type McpEntry,
+} from "./mcpScopes";
 
 /**
  * The Agent section of the settings, one shape per mode:
@@ -799,67 +811,163 @@ export function AgentModelTab({ mode }: { mode: AgentMode }) {
   );
 }
 
-type McpEntry = Record<string, unknown>;
+const MCP_SCOPE_LABEL: Record<McpScope, string> = {
+  user: "用户级",
+  project: "项目级",
+  local: "项目本地",
+};
 
-function mcpTarget(value: McpEntry): string {
-  if (typeof value.command === "string") {
-    const args = Array.isArray(value.args) ? value.args.map(String) : [];
-    return [value.command, ...args].join(" ");
+/** What one row says on hover: the reason behind its dot. */
+function mcpReason(row: McpServerStatus, checking: boolean): string {
+  if (checking) return "检查中…";
+  switch (row.state) {
+    case "connected":
+      return `已连接,${row.tools} 个工具`;
+    case "error":
+      return row.error ?? "连接失败";
+    case "disabled":
+      return "已停用:保留配置但不启动";
+    case "untrusted":
+      return "来自代码项目的服务器:批准前不会连接";
+    case "unused":
+      return "该模式未注册 MCP 工具,不会连接";
+    case "unknown":
+      return "尚未检查连接";
   }
-  return typeof value.url === "string" ? value.url : "(配置不完整)";
 }
 
 /**
- * Agent / MCP: the mode's own servers, each with an on/off switch. The switch
- * writes `disabledMcpServers` instead of deleting the entry, so disabling a
- * server is reversible. The JSON box edits `mcpServers` only and is merged back
- * into the whole file, so unrelated keys are never clobbered.
+ * Agent / MCP: the merged server list of the user scope and the code project's
+ * files, each with a live check.
+ *
+ *   user     `<mode root>/settings.json` — the vault, shared by every project
+ *   project  `<code project>/.mcp.json` (shared with other agents) and
+ *            `<code project>/.bnote/settings.json` — travel with the repo
+ *   local    `<code project>/.bnote/settings.local.json` — this machine only
+ *
+ * A later file wins a name, so the list is the effective configuration, and a
+ * row says which scope it came from. The check really connects and lists tools
+ * (then drops the connection); a settings page that showed "configured" as
+ * "connected" would hide exactly the failure it exists to show. A project
+ * server is not connected until its exact definition was approved — the row
+ * says so and offers the approval.
  */
 export function AgentMcpTab({ mode, workdir }: { mode: AgentMode; workdir: string | null }) {
   const showToast = useAppStore((s) => s.showToast);
   const vaultPath = useAppStore((s) => s.vaultPath);
-  const { paths, reload } = useModePaths(mode, workdir);
-  const [raw, setRaw] = useState<string | null>(null);
-  const [draft, setDraft] = useState<string | null>(null);
+  const { paths } = useModePaths(mode, workdir);
+  // Only coding sessions read the code project, so only they have project scopes.
+  const project = mode === "coding" && workdir ? workdir : null;
+  const scopes: McpScope[] = project ? ["user", "project", "local"] : ["user"];
+  const [raw, setRaw] = useState<Partial<Record<McpScope, string>>>({});
+  const [report, setReport] = useState<McpStatusReport | null>(null);
+  const [checking, setChecking] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [dirty, setDirty] = useState(false);
+  const [editScope, setEditScope] = useState<McpScope>("user");
+  const [draft, setDraft] = useState<string | null>(null);
+  const [nonce, setNonce] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
-    void homeApi
-      .readModeSettings(mode)
-      .then((text) => {
-        if (cancelled) return;
-        setRaw(text);
-        setDraft(null);
-        setDirty(false);
-      })
-      .catch((e) => {
-        if (!cancelled) setError(String(e).replace(/^[A-Z_]+:\s*/, ""));
+    setError(null);
+    // The list falls back to the files while the new check runs, so a toggle
+    // or a save shows the new enabled state immediately instead of the
+    // previous snapshot.
+    setReport(null);
+    setChecking(true);
+    // Derived here (not from the render's `scopes` array) so the effect's
+    // dependency list stays the real inputs: mode, project, nonce.
+    const loaded: McpScope[] = project ? ["user", "project", "local"] : ["user"];
+    void Promise.all(
+      loaded.map((scope) => homeApi.readSettingsScope(mode, project, scope).catch(() => "")),
+    ).then((texts) => {
+      if (cancelled) return;
+      const next: Partial<Record<McpScope, string>> = {};
+      loaded.forEach((scope, index) => {
+        next[scope] = texts[index] ?? "";
       });
+      setRaw(next);
+      setDraft(null);
+      void agentApi
+        .mcpStatus(mode, project)
+        .then((result) => {
+          if (cancelled) return;
+          setReport(result);
+          setChecking(false);
+        })
+        .catch((e) => {
+          if (cancelled) return;
+          setReport(null);
+          setChecking(false);
+          setError(String(e).replace(/^[A-Z_]+:\s*/, ""));
+        });
+    });
     return () => {
       cancelled = true;
     };
-  }, [mode]);
+  }, [mode, project, nonce]);
 
-  let file: Record<string, unknown> = {};
-  if (raw !== null && raw.trim()) {
-    try {
-      const parsed: unknown = JSON.parse(raw);
-      if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
-        file = parsed as Record<string, unknown>;
-      }
-    } catch {
-      // A hand-broken file is reported by the advanced page; the MCP list
-      // simply shows what can be parsed.
-    }
-  }
-  const servers = (file.mcpServers ?? {}) as Record<string, McpEntry>;
-  const disabled = Array.isArray(file.disabledMcpServers)
-    ? (file.disabledMcpServers as unknown[]).map(String)
-    : [];
-  const names = Object.keys(servers).sort();
-  const editorText = draft ?? JSON.stringify(servers, null, 2);
+  const files = Object.fromEntries(
+    scopes.map((scope) => [scope, settingsObject(raw[scope])]),
+  ) as Record<McpScope, Record<string, unknown>>;
+
+  // Before/if the check fails, fall back to the files: the list must not go
+  // empty just because the probe is unavailable.
+  const rows = report?.servers ?? effectiveServers(files, scopes);
+  const checkingNow = checking && report === null;
+
+  const recheck = () => {
+    setChecking(true);
+    void agentApi
+      .mcpStatus(mode, project)
+      .then((result) => {
+        setReport(result);
+        setError(null);
+      })
+      .catch((e) => setError(String(e).replace(/^[A-Z_]+:\s*/, "")))
+      .finally(() => setChecking(false));
+  };
+
+  const writeScope = async (scope: McpScope, text: string) => {
+    await homeApi.writeSettingsScope(mode, project, scope, text);
+    setRaw((prev) => ({ ...prev, [scope]: text }));
+  };
+
+  const toggle = (row: McpServerStatus, on: boolean) => {
+    // Disabling writes the defining file. Enabling must remove the name from
+    // every layer: the merged disabled list is a union, so leaving it in one
+    // file would keep the server off through another.
+    const targets = on ? scopesDisabling(files, scopes, row.name) : [row.scope];
+    const touched = targets.length > 0 ? targets : [row.scope];
+    const writes = touched.map((scope) => ({
+      scope,
+      text: `${JSON.stringify(withDisabled(files[scope], row.name, on), null, 2)}\n`,
+    }));
+    void Promise.all(writes.map((w) => writeScope(w.scope, w.text)))
+      .then(() => {
+        useAppStore.getState().bumpAgentConfigVersion();
+        showToast(`MCP 服务器「${row.name}」已${on ? "启用" : "停用"};新会话生效`);
+        setNonce((n) => n + 1);
+      })
+      .catch((e) => setError(String(e).replace(/^[A-Z_]+:\s*/, "")));
+  };
+
+  const approve = (row: McpServerStatus) => {
+    if (!project) return;
+    void agentApi
+      .trustMcpServer(mode, project, row.name)
+      .then(() => {
+        showToast(`已批准 MCP 服务器「${row.name}」`);
+        recheck();
+      })
+      .catch((e) => setError(String(e).replace(/^[A-Z_]+:\s*/, "")));
+  };
+
+  // The project can close while this page stays mounted: fall back to the user
+  // scope instead of reading a file that is no longer loaded.
+  const activeScope: McpScope = scopes.includes(editScope) ? editScope : "user";
+  const editorFile = files[activeScope] ?? {};
+  const editorText = draft ?? JSON.stringify(serversOf(editorFile), null, 2);
   let draftError: string | null = null;
   let draftServers: Record<string, McpEntry> | null = null;
   try {
@@ -873,93 +981,169 @@ export function AgentMcpTab({ mode, workdir }: { mode: AgentMode; workdir: strin
     draftError = "JSON 尚不合法";
   }
 
-  const write = async (next: Record<string, unknown>, note: string) => {
-    const text = `${JSON.stringify(next, null, 2)}\n`;
-    try {
-      await homeApi.writeModeSettings(mode, text);
-      setRaw(text);
-      setDraft(null);
-      setDirty(false);
-      setError(null);
-      reload();
-      useAppStore.getState().bumpAgentConfigVersion();
-      showToast(note);
-    } catch (e) {
-      setError(String(e).replace(/^[A-Z_]+:\s*/, ""));
-    }
+  const saveEditor = () => {
+    if (!draftServers) return;
+    const text = `${JSON.stringify(withServers(editorFile, draftServers), null, 2)}\n`;
+    void writeScope(activeScope, text)
+      .then(() => {
+        setDraft(null);
+        useAppStore.getState().bumpAgentConfigVersion();
+        showToast("MCP 配置已保存;新会话生效");
+        setNonce((n) => n + 1);
+      })
+      .catch((e) => setError(String(e).replace(/^[A-Z_]+:\s*/, "")));
   };
 
-  const toggle = (name: string, enabled: boolean) => {
-    const nextDisabled = enabled ? disabled.filter((n) => n !== name) : [...disabled, name];
-    const next = { ...file };
-    if (nextDisabled.length > 0) next.disabledMcpServers = nextDisabled;
-    else delete next.disabledMcpServers;
-    void write(next, `MCP 服务器「${name}」已${enabled ? "启用" : "停用"};新会话生效`);
+  const scopePath = (scope: McpScope): string | null => {
+    if (scope === "user") {
+      return paths ? `${paths.root}/settings.json` : null;
+    }
+    if (!project) return null;
+    return `${project}/.bnote/${scope === "project" ? "settings.json" : "settings.local.json"}`;
   };
+
+  const desc = (
+    <>
+      用户级在仓库 <code>.bnote</code> 的本模式配置里,所有项目共用;编码模式还会合并当前代码项目的{" "}
+      <code>.mcp.json</code>(与其他编码 agent 共用的文件)、<code>.bnote/settings.json</code>
+      (随仓库提交)与 <code>settings.local.json</code>(仅本机),同名服务器后者覆盖前者。
+      项目级服务器要先批准(记录在 vault 的 <code>trusted-mcp.json</code>
+      ,绑定当前这份配置),批准前不会连接也不会被检查; 开关只写 <code>disabledMcpServers</code>
+      ,不删除配置。连接状态是打开本页时真实连接并列出工具的结果,检查完即断开; 新建会话才会重新连接。
+    </>
+  );
 
   return (
     <div className="settings-section">
       <SettingsCard
         title="MCP 服务器"
-        desc={
-          <>
-            {MODE_LABEL[mode]}模式连接的 MCP 服务器,定义在{" "}
-            <code>
-              {paths ? displayPath(`${paths.root}/settings.json`, vaultPath) : "settings.json"}
-            </code>{" "}
-            的 <code>mcpServers</code> 里;三种模式各自独立。开关只记录到{" "}
-            <code>disabledMcpServers</code>,不会删除配置。编码模式还会合并代码项目{" "}
-            <code>.bnote/settings.json</code> 的 <code>mcpServers</code>
-            (见「高级」),这里只编辑本模式的条目。工具以 mcp__服务器__工具
-            命名,连接失败会在面板顶部提示。
-          </>
+        desc={desc}
+        actions={
+          <button className="btn btn-ghost" disabled={checking} onClick={recheck}>
+            {checking ? "检查中…" : "重新检查"}
+          </button>
         }
       >
-        <div className="settings-block">
-          {error && <div className="settings-error">{error}</div>}
-          {names.length === 0 ? (
-            <p className="setting-hint">还没有配置 MCP 服务器。在下方 JSON 里添加。</p>
-          ) : (
-            <ul className="mcp-list">
-              {names.map((name) => {
-                const value = servers[name] ?? {};
-                const on = !disabled.includes(name);
-                return (
-                  <li className={`mcp-row${on ? "" : " off"}`} key={name}>
-                    <div className="mcp-row-text">
-                      <code className="mcp-row-name">{name}</code>
-                      <span className="mcp-row-target" title={mcpTarget(value)}>
-                        {mcpTarget(value)}
-                      </span>
-                    </div>
-                    <span className="mcp-row-type">{value.type === "http" ? "http" : "stdio"}</span>
-                    <button
-                      className={`mcp-toggle${on ? " on" : ""}`}
-                      role="switch"
-                      aria-checked={on}
-                      aria-label={`${on ? "停用" : "启用"} ${name}`}
-                      title={on ? "停用" : "启用"}
-                      onClick={() => toggle(name, !on)}
-                    >
-                      <span className="mcp-toggle-knob" />
-                    </button>
-                  </li>
-                );
-              })}
-            </ul>
-          )}
+        {error && <div className="settings-error">{error}</div>}
+        {/* A file that does not parse contributes no servers, so its error is
+            the reason a configured server is missing from the list. */}
+        {paths?.files
+          .filter((file) => file.error)
+          .map((file) => (
+            <div className="settings-error" key={file.path}>
+              {displayPath(file.path, vaultPath)} 解析失败:{file.error}
+            </div>
+          ))}
+        {report && !report.mcpEnabled && (
+          <p className="setting-hint">
+            该模式的工具集没有注册 <code>mcp</code>,下面的配置不会被连接(仅作记录)。
+          </p>
+        )}
+        <div className="mcp-groups">
+          {scopes.map((scope) => {
+            const groupRows = rows.filter((row) => row.scope === scope);
+            const path = scopePath(scope);
+            return (
+              <section className="skill-group" key={scope}>
+                <header className="skill-group-head">
+                  <span
+                    className={`skill-source skill-source-${scope === "user" ? "vault" : "project"}`}
+                  >
+                    {MCP_SCOPE_LABEL[scope]}
+                  </span>
+                  <code className="skill-group-path" title={path ?? undefined}>
+                    {path ? displayPath(path, vaultPath) : "未打开代码项目"}
+                  </code>
+                  <span className="skill-group-count">{groupRows.length}</span>
+                </header>
+                {groupRows.length === 0 ? (
+                  <p className="skill-group-empty">
+                    {scope === "user" ? "还没有配置 MCP 服务器。" : "该项目还没有配置 MCP 服务器。"}
+                  </p>
+                ) : (
+                  <ul className="mcp-list">
+                    {groupRows.map((row) => {
+                      // Only enabled servers are checked; a disabled row says so at once.
+                      const checkingRow = checkingNow && row.enabled;
+                      const state = checkingRow ? "checking" : row.state;
+                      return (
+                        <li className={`mcp-row${row.enabled ? "" : " off"}`} key={row.name}>
+                          <span
+                            className={`mcp-state mcp-state-${state}`}
+                            title={mcpReason(row, checkingRow)}
+                            aria-label={mcpReason(row, checkingRow)}
+                          />
+                          <div className="mcp-row-text">
+                            <code className="mcp-row-name">{row.name}</code>
+                            {/* A failure is the reason this page exists: show it
+                                in the row, not only behind a 7px dot's tooltip. */}
+                            <span
+                              className="mcp-row-target"
+                              title={row.state === "error" ? (row.error ?? row.target) : row.target}
+                            >
+                              {row.state === "error" ? `连接失败:${row.error}` : row.target}
+                            </span>
+                            {row.source.endsWith("/.mcp.json") && (
+                              <span className="mcp-row-source" title={row.source}>
+                                .mcp.json
+                              </span>
+                            )}
+                          </div>
+                          {row.state === "connected" && (
+                            <span className="mcp-row-tools">{row.tools} 个工具</span>
+                          )}
+                          {row.enabled && !row.trusted && (
+                            <button
+                              className="btn btn-ghost mcp-row-approve"
+                              title="项目级服务器要批准后才会连接;批准记录的是当前这份配置"
+                              onClick={() => approve(row)}
+                            >
+                              批准
+                            </button>
+                          )}
+                          <span className="mcp-row-type">{row.transport}</span>
+                          <button
+                            className={`mcp-toggle${row.enabled ? " on" : ""}`}
+                            role="switch"
+                            aria-checked={row.enabled}
+                            aria-label={`${row.enabled ? "停用" : "启用"} ${row.name}`}
+                            title={row.enabled ? "停用" : "启用"}
+                            onClick={() => toggle(row, !row.enabled)}
+                          >
+                            <span className="mcp-toggle-knob" />
+                          </button>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                )}
+              </section>
+            );
+          })}
         </div>
         <div className="settings-block">
-          <div className="settings-block-label">mcpServers</div>
+          <div className="settings-block-label">mcpServers · {MCP_SCOPE_LABEL[activeScope]}</div>
+          {scopes.length > 1 && (
+            <SettingsSelect<McpScope>
+              value={activeScope}
+              onChange={(next) => {
+                setEditScope(next);
+                setDraft(null);
+              }}
+            >
+              {scopes.map((scope) => (
+                <option key={scope} value={scope}>
+                  {MCP_SCOPE_LABEL[scope]}
+                </option>
+              ))}
+            </SettingsSelect>
+          )}
           <textarea
             className="settings-textarea mono"
             rows={8}
             spellCheck={false}
             value={editorText}
-            onChange={(e) => {
-              setDraft(e.target.value);
-              setDirty(true);
-            }}
+            onChange={(e) => setDraft(e.target.value)}
           />
           {draftError ? (
             <div className="settings-error">{draftError}</div>
@@ -975,12 +1159,10 @@ export function AgentMcpTab({ mode, workdir }: { mode: AgentMode; workdir: strin
           <div className="settings-actions">
             <button
               className="btn primary"
-              disabled={!dirty || draftError !== null || draftServers === null}
-              onClick={() =>
-                void write({ ...file, mcpServers: draftServers ?? {} }, "MCP 配置已保存;新会话生效")
-              }
+              disabled={draftError !== null || draftServers === null}
+              onClick={saveEditor}
             >
-              保存 MCP 配置
+              保存 {MCP_SCOPE_LABEL[activeScope]} 配置
             </button>
           </div>
         </div>
@@ -1087,7 +1269,7 @@ export function AgentSkillsTab({ mode, workdir }: { mode: AgentMode; workdir: st
 
 const AGENTS_MD_TEMPLATE: Record<AgentMode, string> = {
   coding: `<!-- AGENTS.md — 编码助手的指令,保存在本模式的配置目录。
-     编码会话还会读取代码仓库里的 AGENTS.md / CLAUDE.md(从 git 根到项目根),
+     编码会话还会读取代码仓库里的 AGENTS.md(从 git 根到项目根;不读 CLAUDE.md),
      这里的指令始终先加载。留空 = 只用内置要求。 -->`,
   creative: `<!-- AGENTS.md — 创作助手的指令,保存在本模式的配置目录。
      创作会话只读取这个文件,不读取仓库里的其他指令。留空 = 只用内置要求。 -->`,
@@ -1158,7 +1340,7 @@ export function AgentInstructionsTab({
         title="AGENTS.md"
         desc={
           mode === "coding"
-            ? "编码助手的指令,保存在配置目录的 AGENTS.md;仓库里的 AGENTS.md / CLAUDE.md 会在此之后追加。"
+            ? "编码助手的指令,保存在配置目录的 AGENTS.md;仓库里的 AGENTS.md(不读 CLAUDE.md)会在此之后追加。"
             : mode === "creative"
               ? "创作助手的指令,保存在配置目录的 AGENTS.md;创作模式只读取这个文件。"
               : "学习助手的指令,保存在配置目录的 AGENTS.md;学习模式只读取这个文件。"

@@ -82,6 +82,7 @@ import { normalizeDailyWidth, normalizeSideWidth } from "@/projects/layoutModel"
 import { normalizeInvestWidth } from "@/invest/layoutModel";
 import { normalizeTreeWidth } from "@/code/treeWidth";
 import { normalizeTermHeight } from "@/code/term/tabs";
+import { normalizeDrawingHeight, normalizeDrawingWidth } from "@/app/drawingWindow";
 import { normalizeTypewriterPosition } from "@/editor/typewriterPosition";
 import { normalizeCodeVim } from "@/state/codeVim";
 
@@ -190,6 +191,10 @@ export default function App() {
       settings.codeTreeWidth = normalizeTreeWidth(settings.codeTreeWidth);
       // The terminal drawer height: same discipline as the tree width.
       settings.codeTermHeight = normalizeTermHeight(settings.codeTermHeight);
+      // The drawing canvas window: a legacy config has no such keys, so the
+      // defaults apply; a hand-edited value below the minimum is lifted to it.
+      settings.drawingWidth = normalizeDrawingWidth(settings.drawingWidth);
+      settings.drawingHeight = normalizeDrawingHeight(settings.drawingHeight);
       // These legacy keys are unused now; drop them so they do not linger in the
       // config file. The right column tab model was replaced by the three column
       // layout (the assistant column is pinned left), so this key can only be

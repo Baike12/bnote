@@ -90,6 +90,27 @@ describe("folder matches", () => {
   });
 });
 
+describe("queries that cross the folder boundary", () => {
+  const NESTED = ["abcd/efg.md", "xabex/efg.md", "notes/hij.md"];
+  const nested = (query: string) =>
+    buildSwitcherResults(NESTED, [], "/v", query).map((r) => r.item);
+
+  it("a folder prefix plus a name prefix finds the file (`abef` → `abcd/efg.md`)", () => {
+    expect(nested("abef")).toContain("abcd/efg.md");
+    expect(nested("abef")[0]).toBe("abcd/efg.md");
+  });
+
+  it("the folder part does not have to start the folder (`cdef` still lands)", () => {
+    expect(nested("cdef")).toContain("abcd/efg.md");
+  });
+
+  it("a version where both parts start their words ranks below one where they start the components", () => {
+    expect(nested("abef").indexOf("abcd/efg.md")).toBeLessThan(
+      nested("abef").indexOf("xabex/efg.md"),
+    );
+  });
+});
+
 describe("full-path matches and the cap", () => {
   it("a multi-term query no single folder satisfies still matches through the whole path", () => {
     expect(items("reading books")).toContain("projects/reading/books.md");

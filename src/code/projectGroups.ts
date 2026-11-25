@@ -35,6 +35,20 @@ export function relativeTime(updatedAt: number, now: number = Date.now()): strin
   return `${Math.floor(hours / 24)} 天`;
 }
 
+/**
+ * Whether a saved record is an auxiliary session (a fork of another session).
+ *
+ * The sidebar lists the sessions the user started; an auxiliary session is
+ * reached from the session it was forked from (the header's session picker),
+ * so a row of its own would duplicate that entry and push a real session out
+ * of the visible limit. `parent` is the fork marker and `basedOn` carries the
+ * fork point's label — a record written before `parent` existed has only the
+ * latter, so either field marks the record.
+ */
+export function isAuxiliarySession(session: Pick<SavedSessionMeta, "parent" | "basedOn">): boolean {
+  return Boolean(session.parent || session.basedOn);
+}
+
 /** Whether a session matches the sidebar's search text (title, path or badge). */
 export function sessionMatches(
   item: { title: string; workdir: string; sourceName: string },

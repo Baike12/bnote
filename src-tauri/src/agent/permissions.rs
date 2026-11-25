@@ -102,6 +102,7 @@ pub fn decide_with_rules(
     if let Some(decision) = rule_decision(rules, tool, input) {
         return decision;
     }
+    // Every tool of every MCP server shares the definition's `mcp` entry.
     let key = if tool.starts_with("mcp__") {
         "mcp"
     } else {
@@ -475,6 +476,37 @@ mod tests {
         );
         assert_eq!(
             decide(Mode::Auto, &def, "Read", &no_input()),
+            Decision::Allow
+        );
+    }
+
+    #[test]
+    fn a_settings_rule_written_for_one_mcp_tool_matches_that_tool() {
+        // An MCP tool is called by its own name, so `deny` on the qualified
+        // name hits it and leaves the server's other tools alone.
+        let rules = Rules {
+            deny: &["mcp__github__create_issue".to_string()],
+            ..Rules::default()
+        };
+        let def = def_with(&[("mcp", Permission::Allow)]);
+        assert_eq!(
+            decide_with_rules(
+                Mode::Auto,
+                &def,
+                &rules,
+                "mcp__github__create_issue",
+                &no_input()
+            ),
+            Decision::Deny
+        );
+        assert_eq!(
+            decide_with_rules(
+                Mode::Auto,
+                &def,
+                &rules,
+                "mcp__github__search_code",
+                &no_input()
+            ),
             Decision::Allow
         );
     }

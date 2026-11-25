@@ -5,6 +5,7 @@ import {
   groupOpen,
   GROUP_SESSION_LIMIT,
   groupRecentProjects,
+  isAuxiliarySession,
   isDirtyRefusal,
   mergeGroupSessions,
   orderPinnedGroups,
@@ -237,6 +238,20 @@ describe("validWorktreeName", () => {
     for (const bad of ["", "a/b", "a\\b", "..", "a..b", ".hidden", " spaced "]) {
       expect(validWorktreeName(bad), bad).toBe(false);
     }
+  });
+});
+
+describe("isAuxiliarySession", () => {
+  it("a forked record is auxiliary (parent set)", () => {
+    expect(isAuxiliarySession({ parent: "main-1", basedOn: "基于这条消息" })).toBe(true);
+  });
+
+  it("a record written before parent existed is still auxiliary (basedOn only)", () => {
+    expect(isAuxiliarySession({ parent: null, basedOn: "基于这条消息" })).toBe(true);
+  });
+
+  it("a session the user started is not", () => {
+    expect(isAuxiliarySession({ parent: null, basedOn: null })).toBe(false);
   });
 });
 

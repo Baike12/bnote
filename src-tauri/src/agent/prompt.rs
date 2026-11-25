@@ -137,7 +137,7 @@ pub fn segments(input: &AssembleInput) -> Vec<PromptSegment> {
         segs.push(PromptSegment::new(
             40,
             "mcp",
-            mcp_section(input.mcp_names),
+            mcp_section(!input.mcp_names.is_empty()),
             false,
         ));
     }
@@ -192,6 +192,11 @@ fn tool_rules(tools: &[String]) -> String {
     if has("TodoWrite") {
         r.push_str(
             "- Maintain multi-step work with TodoWrite: plan before starting (one item = one step), keep exactly one item in_progress, mark items completed as soon as they are done. Skip the list for single-step tasks. TodoRead shows the current list again (after a compaction, or before you claim the work is done).\n",
+        );
+    }
+    if has("mcp") {
+        r.push_str(
+            "- An MCP server's tools are declared with the built-in tools; call one by its full name `mcp__<server>__<tool>` with that tool's own arguments.\n",
         );
     }
     if has("Agent") {
@@ -258,16 +263,15 @@ pub fn skills_section(skills: &[SkillInfo]) -> String {
     s
 }
 
-fn mcp_section(names: &[String]) -> String {
-    if names.is_empty() {
+/// The MCP block is deliberately constant per session: the catalog itself is
+/// the request's tool block (where a server changing is a real change anyway),
+/// never a list rendered into the system prompt.
+fn mcp_section(connected: bool) -> String {
+    if !connected {
         return "## MCP\n\n(未连接 MCP 服务器。)\n\n".into();
     }
-    let mut s = String::from("## MCP\n\n已连接工具:\n\n");
-    for name in names {
-        s.push_str(&format!("- {name}\n"));
-    }
-    s.push('\n');
-    s
+    "## MCP\n\nMCP 服务器的工具和内置工具一起声明在工具表里,名字是 mcp__<server>__<tool>,参数按各自的 schema。\n\n"
+        .into()
 }
 
 fn environment(input: &AssembleInput) -> String {
@@ -429,7 +433,14 @@ mod tests {
         assert!(listing.contains("- html-blog: 把 markdown 排版成博客 HTML"));
 
         let p = assemble(&input(&creative, &["mcp__volcano__shell".to_string()]));
-        assert!(p.contains("- mcp__volcano__shell"));
+        assert!(
+            p.contains("mcp__<server>__<tool>"),
+            "the model is told how an MCP tool is named"
+        );
+        assert!(
+            !p.contains("mcp__volcano__shell"),
+            "the catalog stays out of the system prompt: it is the request's tool block"
+        );
         assert!(p.contains("## Tools"));
     }
 

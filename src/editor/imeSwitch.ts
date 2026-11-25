@@ -225,6 +225,40 @@ export function imeOnChineseFocus(force = false): void {
 }
 
 /**
+ * The `/` picker types ASCII skill names. While it is open the composer wants
+ * the English source even though it is a Chinese writing field; closing it
+ * (a Tab pick, Esc, deleting the slash) hands the box back to whichever
+ * source its context wants — Chinese for the writing field, the vim mode or
+ * the editor context otherwise.
+ *
+ * The picker is opened by a shortcut or by typing `/`, both of which also
+ * focus the box: the begin call runs after the focus handler, so the forced
+ * English intent is the one that goes out.
+ */
+let skillSearch = false;
+
+export function imeBeginSkillSearch(): void {
+  if (skillSearch) return;
+  skillSearch = true;
+  const { settings } = useAppStore.getState();
+  if (!settings.ime.enabled) return;
+  // Forced: the user may have switched to Chinese by hand inside the box.
+  requestTarget(settings.ime.normalSource, true);
+}
+
+export function imeEndSkillSearch(): void {
+  if (!skillSearch) return;
+  skillSearch = false;
+  imeSyncToEditor(true);
+}
+
+/** The picker owns the input source right now (the composer's focus handler
+ *  and the window-focus reconcile must not take it back to Chinese). */
+export function skillSearchActive(): boolean {
+  return skillSearch;
+}
+
+/**
  * The agent composer gained focus (click, shortcut, programmatic focus).
  *
  * With vim on the composer is a vim surface like the note editor: the mode,
@@ -232,9 +266,16 @@ export function imeOnChineseFocus(force = false): void {
  * English). With vim off it is the plain Chinese writing field it always was,
  * and the forced path re-sends the intent (the dedup would otherwise treat a
  * second click as "already Chinese" after the user switched to English inside
- * the box).
+ * the box). While the `/` picker is open the box wants English instead
+ * (`imeBeginSkillSearch`).
  */
 export function imeOnComposerFocus(force = false): void {
+  if (skillSearch) {
+    const { settings } = useAppStore.getState();
+    if (!settings.ime.enabled) return;
+    requestTarget(settings.ime.normalSource, force);
+    return;
+  }
   if (useAppStore.getState().settings.vim) {
     imeSyncToEditor(force);
     return;
@@ -261,6 +302,9 @@ function scheduleFocusVerify(target: string): void {
   focusVerifyTimer = setTimeout(() => {
     focusVerifyTimer = null;
     if (seq !== focusVerifySeq) return;
+    // The picker took the intent over while the timer ran: its own begin call
+    // decides the source, a stale Chinese re-send must not override it.
+    if (skillSearch) return;
     const { settings } = useAppStore.getState();
     if (!settings.ime.enabled || !settings.ime.chineseFields) return;
     if (desired !== target || suspended || !focusInChineseField()) return;
@@ -402,6 +446,12 @@ export function imeSyncToEditor(force = false): void {
   const { settings, modal } = useAppStore.getState();
   if (!settings.ime.enabled) {
     if (desired) imeYield();
+    return;
+  }
+  if (skillSearch) {
+    // The picker owns the box: an ASCII search, even though the box carries
+    // the Chinese-field marker (and regardless of vim mode).
+    requestTarget(settings.ime.normalSource, force);
     return;
   }
   if (focusInChineseField()) {

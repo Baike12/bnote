@@ -19,7 +19,12 @@ import {
   type StudyContent,
 } from "@/lib/tauri";
 import { useAppStore } from "@/state/appStore";
-import { imeOnComposerFocus, imeSyncToEditor } from "@/editor/imeSwitch";
+import {
+  imeBeginSkillSearch,
+  imeEndSkillSearch,
+  imeOnComposerFocus,
+  imeSyncToEditor,
+} from "@/editor/imeSwitch";
 import { isImeEnter } from "@/lib/imeEnter";
 import { forkLabel } from "@/study/agentFork";
 import { DEFAULT_AGENT_FONT, stepAgentFont } from "@/study/agentFont";
@@ -1491,7 +1496,11 @@ export function AgentPanel() {
     // (a programmatic insertion leaves the engine in normal mode).
     composer?.enterInsert();
     composer?.focus();
+    // Skill names are typed in Latin letters: the picker wants the English
+    // source. This runs after the focus handler, so its intent is the last one
+    // that goes out (the focus handler would have asked for Chinese).
     imeOnComposerFocus(true);
+    imeBeginSkillSearch();
   }, [input]);
 
   /** Pick a completion candidate: the trigger word is replaced and the caret lands after the inserted text. */
@@ -2122,6 +2131,15 @@ export function AgentPanel() {
 
   /** The completion popup is showing: its keys are the popup's (see composerKeys). */
   const suggestOpen = Boolean(suggestTrigger && suggestItems.length > 0);
+
+  // The `/` picker searches skill names with the English source; the moment it
+  // closes (Tab pick, Esc, deleting the slash, leaving the box) the composer
+  // takes its own source back. Typing "/" by hand and the ⌘/ shortcut both
+  // land here, so one rule covers both entry points.
+  useEffect(() => {
+    if (suggestTrigger?.kind === "skill") imeBeginSkillSearch();
+    return () => imeEndSkillSearch();
+  }, [suggestTrigger?.kind]);
 
   function onComposerChange(text: string, caret: number, docChanged: boolean) {
     // A caret move changes no trigger; only a real edit can open or close one.

@@ -28,7 +28,7 @@ export function CodeOverlays() {
   return <RenamePrompt onClose={() => setRequest(null)} />;
 }
 
-/** Quick open: fuzzy-search by file name, Enter opens. */
+/** Quick open: fuzzy-search by file or folder name, Enter opens. */
 function QuickOpen({ onClose }: { onClose: () => void }) {
   const root = useCodeStore((s) => s.project?.root ?? "");
   const entries = useCodeStore((s) => s.project?.tree.entries);

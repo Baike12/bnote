@@ -7,15 +7,36 @@
 use crate::commands::normalize;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::SystemTime;
 
+use super::file_state::{FileState, FileStateCache};
 use super::shell::{BgRegistry, ShellCwd};
 use super::types::InlineImage;
 
-/// Tool execution result. Text tools only carry `text`; a rich-output tool
-/// (currently only preview_html) may attach a rendered screenshot, which the
-/// session writes into ToolResult.images so the model can check the page
-/// rendering itself.
+/// Files above this size must be read with `offset`/`limit`: reading one into
+/// memory only to truncate the result at [`MAX_RESULT_BYTES`] wastes both. 256
+/// KB is Claude Code's default read cap.
+const MAX_READ_BYTES: u64 = 256 * 1024;
+
+/// The Read tool's output cap, in bytes of formatted text (~40k ASCII
+/// characters). Long files are Read in ranges.
+const MAX_RESULT_BYTES: usize = 40_000;
+
+/// WebFetch reads at most this much of a response body. Docs pages are well
+/// under it; a binary or an endless stream stops here instead of filling
+/// memory.
+const MAX_FETCH_BYTES: usize = 2 * 1024 * 1024;
+
+/// One image attachment limit. Anthropic rejects a request whose image exceeds
+/// 5 MB, so refusing here beats a provider error after the turn has spent its
+/// tokens.
+const MAX_IMAGE_BYTES: u64 = 5 * 1024 * 1024;
+
+/// Tool execution result. Text tools only carry `text`; a rich-output tool may
+/// attach images, which the session writes into ToolResult.images: a rendered
+/// preview screenshot (preview_html) or a file the agent looked at (Read).
 pub struct ToolOutput {
     pub ok: bool,
     pub text: String,
@@ -56,6 +77,15 @@ pub struct ToolContext {
     /// Files this session read since the last request. The session uses them to
     /// load nested instruction files (`nested_memory`), the way CC does.
     pub read_paths: std::sync::Mutex<Vec<PathBuf>>,
+    /// What the model has read in this session: path → (mtime, range). Write
+    /// and Edit gate on it; Read records into it. Session-owned, never shared
+    /// between a parent and its subagents — a child that was spawned without
+    /// the parent's transcript has not seen those tool results either.
+    pub files: Arc<FileStateCache>,
+    /// The current model accepts images (the catalog's per-model flag). Read
+    /// refuses to attach an image to a model that cannot see it; the session
+    /// updates this on a model switch.
+    pub vision: AtomicBool,
     /// Extra writable roots from `settings.permissions.additionalDirectories`.
     pub extra_roots: Vec<PathBuf>,
     /// The invest session's scope (`stock:600519` / `sector:801010`). The
@@ -89,6 +119,64 @@ impl ToolContext {
             .lock()
             .map(|mut paths| std::mem::take(&mut *paths))
             .unwrap_or_default()
+    }
+
+    /// Cache key for a file: symlinked spellings of the same file share one
+    /// entry. A path that does not exist yet keeps its lexical form; Write
+    /// records it only after the file exists.
+    fn cache_key(path: &Path) -> PathBuf {
+        path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
+    }
+
+    /// The write gate shared by Write and Edit: an existing file must have been
+    /// Read in this session and must not have changed on disk since. `Ok(None)`
+    /// means the file does not exist; creating it needs no prior Read.
+    ///
+    /// Bash writes are covered without a hook: the next Write/Edit compares the
+    /// disk mtime against the recorded one and refuses.
+    async fn writable_mtime(&self, path: &Path) -> Result<Option<SystemTime>, String> {
+        let meta = match tokio::fs::metadata(path).await {
+            Ok(meta) => meta,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(format!("cannot stat {}: {e}", path.display())),
+        };
+        let mtime = meta
+            .modified()
+            .map_err(|e| format!("cannot read the mtime of {}: {e}", path.display()))?;
+        let Some(state) = self.files.get(&Self::cache_key(path)) else {
+            return Err(format!(
+                "{} has not been read in this session: Read it before writing",
+                path.display()
+            ));
+        };
+        if mtime > state.mtime {
+            return Err(format!(
+                "{} changed on disk after it was read (by the user, a formatter, or a shell command): Read it again before writing",
+                path.display()
+            ));
+        }
+        Ok(Some(mtime))
+    }
+
+    /// Records a file the tool just wrote, so the next Write/Edit needs no new
+    /// Read and a following Read re-sends the new content instead of a stub.
+    ///
+    /// A failed stat is ignored on purpose: the write already succeeded, and
+    /// dropping the record only forces the model to Read again (the safe
+    /// direction). Returning an error here would report a false write failure.
+    async fn note_written(&self, path: &Path) {
+        if let Ok(meta) = tokio::fs::metadata(path).await {
+            if let Ok(mtime) = meta.modified() {
+                self.files.record(
+                    &Self::cache_key(path),
+                    FileState {
+                        mtime,
+                        offset: None,
+                        limit: None,
+                    },
+                );
+            }
+        }
     }
 
     /// Resolves a tool-supplied path: absolute paths pass through; relative
@@ -232,7 +320,7 @@ pub fn tool_schemas() -> &'static [(&'static str, &'static str, Value)] {
     SCHEMAS.get_or_init(|| vec![
     (
         "Read",
-        "Reads a file from the local filesystem. Results are returned in cat -n format with line numbers starting at 1, truncated at ~2000 lines. Paths are relative to the working directory or absolute. You must read a file before editing it.",
+        "Reads a file from the local filesystem. Text results are returned in cat -n format with line numbers starting at 1, truncated at ~2000 lines; PNG/JPEG/GIF/WebP images are returned as image content the model can look at. Paths are relative to the working directory or absolute. You must read a file before editing it. Repeating the same offset/limit on a file that has not changed returns a short note instead of the content. Files above 256 KB must be read in ranges (pass limit).",
         json!({
             "type": "object",
             "properties": {
@@ -245,7 +333,7 @@ pub fn tool_schemas() -> &'static [(&'static str, &'static str, Value)] {
     ),
     (
         "Write",
-        "Writes a file to the local filesystem, overwriting it if it exists (parent directories are created). You MUST use the Read tool on the file in this conversation before overwriting it. NEVER create documentation files (*.md) or README files unless explicitly requested.",
+        "Writes a file to the local filesystem, overwriting it if it exists (parent directories are created). Overwriting an existing file requires that Read opened it in this session and that it has not changed on disk since; otherwise the write fails. NEVER create documentation files (*.md) or README files unless explicitly requested.",
         json!({
             "type": "object",
             "properties": {
@@ -257,7 +345,7 @@ pub fn tool_schemas() -> &'static [(&'static str, &'static str, Value)] {
     ),
     (
         "Edit",
-        "Performs exact string replacement in a file. You must use the Read tool at least once in the conversation before editing. The edit FAILS if old_string is not unique — include more surrounding context to make it unique, or use replace_all. To replace many occurrences at once set replace_all to true.",
+        "Performs exact string replacement in a file. You must use the Read tool on the file in this session before editing, and the edit fails if the file changed on disk since that read. The edit FAILS if old_string is not unique — include more surrounding context to make it unique, or use replace_all. To replace many occurrences at once set replace_all to true.",
         json!({
             "type": "object",
             "properties": {
@@ -276,7 +364,7 @@ pub fn tool_schemas() -> &'static [(&'static str, &'static str, Value)] {
     ),
     (
         "WebFetch",
-        "Fetches content from a specified URL and returns its readable text (HTML stripped, ~40KB cap). HTTP URLs are not upgraded; cross-host redirects must be re-requested with the redirect target.",
+        "Fetches content from a URL and returns its readable text (HTML stripped, ~40 KB cap). Redirects are followed and the final URL is reported; a non-2xx response is an error; the body read is capped at 2 MB. Use it for documentation and issues instead of curl.",
         json!({
             "type": "object",
             "properties": {
@@ -302,7 +390,7 @@ pub fn tool_schemas() -> &'static [(&'static str, &'static str, Value)] {
     ),
     (
         "TaskOutput",
-        "Reads the output of a background task started with Bash run_in_background.",
+        "Reads the output of a background shell task started with Bash run_in_background.",
         json!({
             "type": "object",
             "properties": {
@@ -313,13 +401,13 @@ pub fn tool_schemas() -> &'static [(&'static str, &'static str, Value)] {
     ),
     (
         "TaskStop",
-        "Stops a running background task by its ID.",
+        "Stops a running background shell task (task_id) or a subagent (agent_id). A stopped subagent reports \"stopped\"; resume it with SendMessage.",
         json!({
             "type": "object",
             "properties": {
-                "task_id": {"type": "integer", "description": "The background task id"}
-            },
-            "required": ["task_id"]
+                "task_id": {"type": "integer", "description": "The background shell task id (Bash run_in_background)"},
+                "agent_id": {"type": "string", "description": "The agentId returned by the Agent tool"}
+            }
         }),
     ),
     (
@@ -374,7 +462,7 @@ pub fn tool_schemas() -> &'static [(&'static str, &'static str, Value)] {
     ),
     (
         "Agent",
-        "Launch a new agent to handle complex, multi-step tasks autonomously. The agent has its own context window and returns a single final report, so it is the right tool for broad searches, independent sub-problems, or anything whose intermediate output would flood this conversation.\n\nWhen to use: research across many files, exploring a codebase for an answer, or independent work that can run while you continue. When NOT to use: a simple directed search (use Glob/Grep), or work that depends on what you are doing right now.\n\nUsage: launch every agent you need in ONE message (several Agent tool calls side by side) — they run in parallel. Calls beyond the user's concurrency setting queue and start as slots free up, so also give each agent a self-contained `description` (it is the row the user watches). To continue an agent you already launched (including one that stopped on an error), use SendMessage with its agentId instead of spawning a new one. Trust the report and do not duplicate the agent's work yourself. `run_in_background: true` returns immediately; you are notified when it finishes. `fork: true` starts from this conversation's transcript instead of a fresh context.",
+        "Launch a new agent to handle complex, multi-step tasks autonomously. The agent has its own context window and returns a single final report, so it is the right tool for broad searches, independent sub-problems, or anything whose intermediate output would flood this conversation.\n\nWhen to use: research across many files, exploring a codebase for an answer, or independent work that can run while you continue. When NOT to use: a simple directed search (use Glob/Grep), or work that depends on what you are doing right now.\n\nUsage: launch every agent you need in ONE message (several Agent tool calls side by side) — they run in parallel. Calls beyond the user's concurrency setting queue and start as slots free up, so also give each agent a self-contained `description` (it is the row the user watches). To continue an agent you already launched (including one that stopped on an error), use SendMessage with its agentId instead of spawning a new one. Trust the report and do not duplicate the agent's work yourself. `run_in_background: true` returns immediately; you are notified when it finishes, and TaskStop with its agentId stops it. `fork: true` starts from this conversation's transcript instead of a fresh context.",
         json!({
             "type": "object",
             "properties": {
@@ -550,11 +638,15 @@ pub async fn execute(
     input: &Value,
     mode: super::permissions::Mode,
 ) -> ToolOutput {
-    // Rich-output tool: besides the text it returns a rendered screenshot
-    // (see preview_html).
-    if name == "preview_html" {
-        let path = input["path"].as_str().unwrap_or_default();
-        return preview_html(ctx, path).await;
+    // Tools whose result is richer than text: a rendered screenshot
+    // (preview_html) or image content (Read).
+    match canonical(name) {
+        "preview_html" => {
+            let path = input["path"].as_str().unwrap_or_default();
+            return preview_html(ctx, path).await;
+        }
+        "Read" => return read_tool(ctx, input).await,
+        _ => {}
     }
     let (ok, text) = execute_text(ctx, skills, name, input, mode).await;
     ToolOutput::text(ok, text)
@@ -580,30 +672,6 @@ async fn execute_text(
             .to_string()
     };
     match name {
-        "Read" => {
-            let path = path_param();
-            match ctx.resolve(&path) {
-                Ok(p) => match tokio::fs::read_to_string(&p).await {
-                    Ok(content) => {
-                        ctx.note_read(&p);
-                        // cat -n format (CC's Read): line numbers starting at 1,
-                        // honoring offset/limit when given.
-                        let lines: Vec<&str> = content.lines().collect();
-                        let offset = input["offset"].as_u64().unwrap_or(1).max(1) as usize;
-                        let limit = input["limit"].as_u64().map(|n| n as usize).unwrap_or(2000);
-                        let start = (offset - 1).min(lines.len());
-                        let end = (start + limit).min(lines.len());
-                        let mut out = String::new();
-                        for (i, line) in lines[start..end].iter().enumerate() {
-                            out.push_str(&format!("{:>6}\t{}\n", start + i + 1, line));
-                        }
-                        (true, truncate(&out, 40_000))
-                    }
-                    Err(e) => (false, format!("read failed: {}", e)),
-                },
-                Err(e) => (false, e),
-            }
-        }
         "Write" => {
             let path = path_param();
             let content = input["content"].as_str().unwrap_or_default();
@@ -612,14 +680,22 @@ async fn execute_text(
                     if let Err(e) = ctx.ensure_confined(&p, mode) {
                         return (false, e);
                     }
+                    if let Err(e) = ctx.writable_mtime(&p).await {
+                        return (false, e);
+                    }
                     if let Some(parent) = p.parent() {
-                        let _ = tokio::fs::create_dir_all(parent).await;
+                        if let Err(e) = tokio::fs::create_dir_all(parent).await {
+                            return (false, format!("cannot create {}: {e}", parent.display()));
+                        }
                     }
                     match tokio::fs::write(&p, content).await {
-                        Ok(()) => (
-                            true,
-                            format!("wrote {} ({} bytes)", p.display(), content.len()),
-                        ),
+                        Ok(()) => {
+                            ctx.note_written(&p).await;
+                            (
+                                true,
+                                format!("wrote {} ({} bytes)", p.display(), content.len()),
+                            )
+                        }
                         Err(e) => (false, format!("write failed: {}", e)),
                     }
                 }
@@ -689,29 +765,9 @@ async fn execute_text(
             if !url.starts_with("http://") && !url.starts_with("https://") {
                 return (false, "invalid url".into());
             }
-            let client = match reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(30))
-                .build()
-            {
-                Ok(c) => c,
-                Err(e) => return (false, format!("http client init failed: {}", e)),
-            };
-            match client.get(&url).send().await {
-                Ok(resp) => {
-                    let mime = resp
-                        .headers()
-                        .get("content-type")
-                        .and_then(|v| v.to_str().ok())
-                        .unwrap_or("")
-                        .to_string();
-                    let body = resp.text().await.unwrap_or_default();
-                    if mime.contains("text/html") {
-                        (true, truncate(&html_to_text(&body), 40_000))
-                    } else {
-                        (true, truncate(&body, 40_000))
-                    }
-                }
-                Err(e) => (false, format!("fetch failed: {}", e)),
+            match fetch_url(&url).await {
+                Ok(text) => (true, text),
+                Err(e) => (false, e),
             }
         }
         "Edit" => {
@@ -730,6 +786,9 @@ async fn execute_text(
                     if let Err(e) = ctx.ensure_confined(&p, mode) {
                         return (false, e);
                     }
+                    if let Err(e) = ctx.writable_mtime(&p).await {
+                        return (false, e);
+                    }
                     match tokio::fs::read_to_string(&p).await {
                         Ok(content) => {
                             let hits = content.matches(old).count();
@@ -744,15 +803,18 @@ async fn execute_text(
                                     content.replacen(old, new, 1)
                                 };
                                 match tokio::fs::write(&p, updated).await {
-                                    Ok(()) => (
-                                        true,
-                                        format!(
-                                            "edited {} ({} replacement{})",
-                                            p.display(),
-                                            if replace_all { hits } else { 1 },
-                                            if replace_all && hits > 1 { "s" } else { "" }
-                                        ),
-                                    ),
+                                    Ok(()) => {
+                                        ctx.note_written(&p).await;
+                                        (
+                                            true,
+                                            format!(
+                                                "edited {} ({} replacement{})",
+                                                p.display(),
+                                                if replace_all { hits } else { 1 },
+                                                if replace_all && hits > 1 { "s" } else { "" }
+                                            ),
+                                        )
+                                    }
                                     Err(e) => (false, format!("write failed: {}", e)),
                                 }
                             }
@@ -859,6 +921,275 @@ async fn execute_text(
         }
         _ => (false, format!("unknown tool: {}", name)),
     }
+}
+
+/// The Read tool: text through [`read_text`], images as provider-visible
+/// content. An image is its own result shape (`ToolOutput.images`), which the
+/// session stores in the tool result and the provider layer delivers.
+async fn read_tool(ctx: &ToolContext, input: &Value) -> ToolOutput {
+    let path = input["file_path"]
+        .as_str()
+        .or_else(|| input["path"].as_str())
+        .unwrap_or_default()
+        .to_string();
+    let resolved = match ctx.resolve(&path) {
+        Ok(p) => p,
+        Err(e) => return ToolOutput::text(false, e),
+    };
+    if let Some(declared) = image_media_type(&resolved) {
+        return read_image(ctx, &resolved, declared).await;
+    }
+    let offset = input["offset"].as_u64().unwrap_or(1).max(1);
+    let limit = input["limit"].as_u64();
+    let (ok, text) = read_text(ctx, &resolved, offset, limit).await;
+    ToolOutput::text(ok, text)
+}
+
+/// The media type a Read should attach, chosen by extension. The content is
+/// verified against the magic bytes before it is sent.
+fn image_media_type(path: &Path) -> Option<&'static str> {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase());
+    match ext.as_deref() {
+        Some("png") => Some("image/png"),
+        Some("jpg") | Some("jpeg") => Some("image/jpeg"),
+        Some("gif") => Some("image/gif"),
+        Some("webp") => Some("image/webp"),
+        _ => None,
+    }
+}
+
+/// The true format of an image, from its first bytes: a text file renamed to
+/// `.png` must not be handed to the provider as an image block.
+fn sniff_image(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]) {
+        Some("image/png")
+    } else if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        Some("image/jpeg")
+    } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        Some("image/gif")
+    } else if bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+        Some("image/webp")
+    } else {
+        None
+    }
+}
+
+/// An image Read: the image goes to the model only when the model can see it,
+/// and only when the bytes really are the format the name claims.
+async fn read_image(ctx: &ToolContext, path: &Path, declared: &str) -> ToolOutput {
+    if !ctx.vision.load(Ordering::SeqCst) {
+        return ToolOutput::text(
+            false,
+            format!(
+                "{} is an image, but the current model cannot view images (no vision). Switch to a vision model to Read it",
+                path.display()
+            ),
+        );
+    }
+    let meta = match tokio::fs::metadata(path).await {
+        Ok(meta) => meta,
+        Err(e) => return ToolOutput::text(false, format!("read failed: {e}")),
+    };
+    if meta.len() > MAX_IMAGE_BYTES {
+        return ToolOutput::text(
+            false,
+            format!(
+                "{} is {} bytes, above the {} MB image limit; shrink it first",
+                path.display(),
+                meta.len(),
+                MAX_IMAGE_BYTES / (1024 * 1024)
+            ),
+        );
+    }
+    let bytes = match tokio::fs::read(path).await {
+        Ok(bytes) => bytes,
+        Err(e) => return ToolOutput::text(false, format!("read failed: {e}")),
+    };
+    let Some(media_type) = sniff_image(&bytes) else {
+        return ToolOutput::text(
+            false,
+            format!(
+                "{} has the extension of a {} file but its content is not PNG/JPEG/GIF/WebP",
+                path.display(),
+                declared.trim_start_matches("image/").to_uppercase()
+            ),
+        );
+    };
+    use base64::Engine as _;
+    let data = base64::engine::general_purpose::STANDARD.encode(&bytes);
+    ToolOutput {
+        ok: true,
+        text: format!(
+            "Read image {} ({}, {:.1} KB). It is attached below.",
+            path.display(),
+            media_type,
+            bytes.len() as f64 / 1024.0
+        ),
+        images: vec![InlineImage {
+            media_type: media_type.to_string(),
+            data,
+        }],
+    }
+}
+
+/// WebFetch: a bounded read with honest status handling, then HTML → text.
+async fn fetch_url(url: &str) -> Result<String, String> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        // No default UA gets a 403 from many documentation sites.
+        .user_agent("bnote-agent/0.1")
+        .build()
+        .map_err(|e| format!("http client init failed: {e}"))?;
+    let mut resp = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|e| format!("fetch failed: {e}"))?;
+    let status = resp.status();
+    // Redirects are followed by the client; report where the content came from
+    // so the model cites the right URL.
+    let final_url = resp.url().to_string();
+    if !status.is_success() {
+        return Err(format!("fetch failed: HTTP {status} from {final_url}"));
+    }
+    let mime = resp
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if let Some(len) = resp.content_length() {
+        if len > MAX_FETCH_BYTES as u64 {
+            return Err(format!(
+                "fetch failed: {final_url} is {len} bytes, above the {} MB fetch cap",
+                MAX_FETCH_BYTES / (1024 * 1024)
+            ));
+        }
+    }
+    let mut body: Vec<u8> = Vec::new();
+    let mut capped = false;
+    while let Some(chunk) = resp
+        .chunk()
+        .await
+        .map_err(|e| format!("fetch failed: {e}"))?
+    {
+        if body.len() + chunk.len() > MAX_FETCH_BYTES {
+            body.extend_from_slice(&chunk[..MAX_FETCH_BYTES - body.len()]);
+            capped = true;
+            break;
+        }
+        body.extend_from_slice(&chunk);
+    }
+    let raw = String::from_utf8_lossy(&body);
+    let text = if mime.contains("html") {
+        html_to_text(&raw)
+    } else {
+        raw.into_owned()
+    };
+    let note = if capped {
+        "\n\n[truncated at 2 MB]"
+    } else {
+        ""
+    };
+    Ok(format!(
+        "{final_url}\n\n{}{}",
+        truncate(&text, MAX_RESULT_BYTES),
+        note
+    ))
+}
+
+/// The Read tool: mtime-keyed dedupe, the byte guard, then `cat -n` output.
+///
+/// The state is recorded from the stat taken *before* the content, so a file
+/// that changes during the read is stored with the older mtime; the next
+/// Write/Edit then refuses it as stale instead of accepting content the model
+/// never saw.
+async fn read_text(
+    ctx: &ToolContext,
+    path: &Path,
+    offset: u64,
+    limit: Option<u64>,
+) -> (bool, String) {
+    let meta = match tokio::fs::metadata(path).await {
+        Ok(meta) => meta,
+        Err(e) => return (false, format!("read failed: {e}")),
+    };
+    let mtime = match meta.modified() {
+        Ok(mtime) => mtime,
+        Err(e) => {
+            return (
+                false,
+                format!(
+                    "read failed: cannot read the mtime of {}: {e}",
+                    path.display()
+                ),
+            );
+        }
+    };
+    // An unbounded read of a large file pulls the whole thing into memory only
+    // to cut the result short; make the model page through it instead.
+    if limit.is_none() && meta.len() > MAX_READ_BYTES {
+        return (
+            false,
+            format!(
+                "{} is {} bytes: Read it with offset and limit instead of in one result",
+                path.display(),
+                meta.len()
+            ),
+        );
+    }
+    let key = ToolContext::cache_key(path);
+    if let Some(state) = ctx.files.get(&key) {
+        if state.mtime == mtime && state.covers(offset, limit) {
+            return (
+                true,
+                format!(
+                    "{} is unchanged since the last Read in this session: the earlier content is still in the conversation",
+                    path.display()
+                ),
+            );
+        }
+    }
+    let content = match tokio::fs::read_to_string(path).await {
+        Ok(content) => content,
+        // A binary that is not a supported image: say what Read can take, not
+        // the bare "stream did not contain valid UTF-8".
+        Err(e) if e.kind() == std::io::ErrorKind::InvalidData => {
+            return (
+                false,
+                format!(
+                    "{} is not UTF-8 text; Read handles text files and PNG/JPEG/GIF/WebP images",
+                    path.display()
+                ),
+            );
+        }
+        Err(e) => return (false, format!("read failed: {e}")),
+    };
+    ctx.note_read(path);
+    // cat -n format (CC's Read): line numbers starting at 1, honoring
+    // offset/limit when given (2000 lines when the model gave no limit).
+    let lines: Vec<&str> = content.lines().collect();
+    let start = (offset as usize - 1).min(lines.len());
+    let end = (start + limit.unwrap_or(2000) as usize).min(lines.len());
+    let mut out = String::new();
+    for (i, line) in lines[start..end].iter().enumerate() {
+        out.push_str(&format!("{:>6}\t{}\n", start + i + 1, line));
+    }
+    let truncated = out.len() > MAX_RESULT_BYTES;
+    ctx.files.record(
+        &key,
+        FileState {
+            mtime,
+            // A result cut by the output cap did not show the whole range, so
+            // a repeat must re-send it: recording no range makes `covers` false.
+            offset: (!truncated).then_some(offset),
+            limit,
+        },
+    );
+    (true, truncate(&out, MAX_RESULT_BYTES))
 }
 
 /// Very small DOM-based HTML→text (keeps block structure, drops scripts/styles).
@@ -989,7 +1320,9 @@ async fn preview_html(ctx: &ToolContext, path: &str) -> ToolOutput {
     // A missing screenshot (unsupported platform / timeout) only degrades to
     // plain text; the preview itself is unaffected.
     let mut images = Vec::new();
-    if ctx.app.is_some() && cfg!(target_os = "macos") {
+    // A model without vision gets no screenshot: the OpenAI wire would drop it
+    // and a strict gateway would reject the turn.
+    if ctx.vision.load(Ordering::SeqCst) && ctx.app.is_some() && cfg!(target_os = "macos") {
         if let Some(png) =
             crate::commands::agent::wait_preview_shot(version, std::time::Duration::from_secs(4))
                 .await
@@ -1043,6 +1376,8 @@ mod tests {
             shell: Arc::new(crate::agent::shell::ShellCwd::new()),
             bg: Arc::new(crate::agent::shell::BgRegistry::new()),
             read_paths: std::sync::Mutex::new(Vec::new()),
+            files: Arc::new(FileStateCache::new()),
+            vision: AtomicBool::new(true),
             extra_roots: Vec::new(),
             invest_scope: None,
         }
@@ -1084,6 +1419,8 @@ mod tests {
         let file = vault.join("post.html");
         std::fs::write(&file, "<h1>旧标题</h1>\n<p>正文</p>\n").unwrap();
         let c = ctx(&vault, &vault);
+        let out = run(&c, Mode::Auto, "Read", json!({"file_path": "post.html"})).await;
+        assert!(out.ok, "{}", out.text);
         let out = run(
             &c,
             Mode::Auto,
@@ -1106,6 +1443,8 @@ mod tests {
         let file = vault.join("post.md");
         std::fs::write(&file, "a b a").unwrap();
         let c = ctx(&vault, &vault);
+        let out = run(&c, Mode::Auto, "Read", json!({"file_path": "post.md"})).await;
+        assert!(out.ok, "{}", out.text);
         let out = run(
             &c,
             Mode::Auto,
@@ -1285,6 +1624,314 @@ mod tests {
         // A non-.html file is rejected
         let out = run(&c, Mode::Auto, "preview_html", json!({"path": "page.md"})).await;
         assert!(!out.ok && out.text.contains(".html"), "{}", out.text);
+    }
+
+    /// Reads through the tool, so the session records the state a later
+    /// Write/Edit gates on.
+    async fn read(c: &ToolContext, path: &str) -> ToolOutput {
+        run(c, Mode::Auto, "Read", json!({"file_path": path})).await
+    }
+
+    /// Rewrites a file behind the agent's back (the user, a formatter, or a
+    /// shell command). Sleeps first: the gate compares mtimes, and a
+    /// coarse-grained filesystem would otherwise report the two writes as one.
+    fn external_write(path: &Path, content: &str) {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(path, content).unwrap();
+    }
+
+    #[tokio::test]
+    async fn write_refuses_an_existing_file_that_was_not_read() {
+        let vault = std::env::temp_dir().join("bnote-write-gate-test-1");
+        let _ = std::fs::remove_dir_all(&vault);
+        std::fs::create_dir_all(&vault).unwrap();
+        let file = vault.join("note.md");
+        std::fs::write(&file, "user text").unwrap();
+        let c = ctx(&vault, &vault);
+        let out = run(
+            &c,
+            Mode::Auto,
+            "Write",
+            json!({"file_path": "note.md", "content": "agent text"}),
+        )
+        .await;
+        assert!(
+            !out.ok && out.text.contains("has not been read"),
+            "{}",
+            out.text
+        );
+        assert_eq!(
+            std::fs::read_to_string(&file).unwrap(),
+            "user text",
+            "the refused write must not touch the file"
+        );
+        let out = read(&c, "note.md").await;
+        assert!(out.ok, "{}", out.text);
+        let out = run(
+            &c,
+            Mode::Auto,
+            "Write",
+            json!({"file_path": "note.md", "content": "agent text"}),
+        )
+        .await;
+        assert!(out.ok, "{}", out.text);
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "agent text");
+    }
+
+    #[tokio::test]
+    async fn write_and_edit_refuse_a_file_changed_since_the_read() {
+        let vault = std::env::temp_dir().join("bnote-write-gate-test-2");
+        let _ = std::fs::remove_dir_all(&vault);
+        std::fs::create_dir_all(&vault).unwrap();
+        let file = vault.join("note.md");
+        std::fs::write(&file, "one").unwrap();
+        let c = ctx(&vault, &vault);
+        let out = read(&c, "note.md").await;
+        assert!(out.ok, "{}", out.text);
+        external_write(&file, "two");
+        let out = run(
+            &c,
+            Mode::Auto,
+            "Edit",
+            json!({"file_path": "note.md", "old_string": "two", "new_string": "three"}),
+        )
+        .await;
+        assert!(
+            !out.ok && out.text.contains("changed on disk"),
+            "{}",
+            out.text
+        );
+        let out = run(
+            &c,
+            Mode::Auto,
+            "Write",
+            json!({"file_path": "note.md", "content": "x"}),
+        )
+        .await;
+        assert!(
+            !out.ok && out.text.contains("changed on disk"),
+            "{}",
+            out.text
+        );
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "two");
+        // Reading again is the documented recovery: the gate then opens.
+        let out = read(&c, "note.md").await;
+        assert!(out.ok, "{}", out.text);
+        let out = run(
+            &c,
+            Mode::Auto,
+            "Edit",
+            json!({"file_path": "note.md", "old_string": "two", "new_string": "three"}),
+        )
+        .await;
+        assert!(out.ok, "{}", out.text);
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "three");
+    }
+
+    #[tokio::test]
+    async fn a_file_the_agent_wrote_can_be_edited_without_reading_it_again() {
+        let vault = std::env::temp_dir().join("bnote-write-gate-test-3");
+        let _ = std::fs::remove_dir_all(&vault);
+        std::fs::create_dir_all(&vault).unwrap();
+        let c = ctx(&vault, &vault);
+        let out = run(
+            &c,
+            Mode::Auto,
+            "Write",
+            json!({"file_path": "fresh.md", "content": "a b"}),
+        )
+        .await;
+        assert!(out.ok, "{}", out.text);
+        let out = run(
+            &c,
+            Mode::Auto,
+            "Edit",
+            json!({"file_path": "fresh.md", "old_string": "b", "new_string": "c"}),
+        )
+        .await;
+        assert!(out.ok, "{}", out.text);
+        assert_eq!(
+            std::fs::read_to_string(vault.join("fresh.md")).unwrap(),
+            "a c"
+        );
+    }
+
+    #[tokio::test]
+    async fn reading_the_same_range_twice_returns_a_stub() {
+        let vault = std::env::temp_dir().join("bnote-read-dedupe-test");
+        let _ = std::fs::remove_dir_all(&vault);
+        std::fs::create_dir_all(&vault).unwrap();
+        let file = vault.join("note.md");
+        std::fs::write(&file, "alpha\nbeta\n").unwrap();
+        let c = ctx(&vault, &vault);
+        let out = read(&c, "note.md").await;
+        assert!(out.ok && out.text.contains("alpha"), "{}", out.text);
+        let out = read(&c, "note.md").await;
+        assert!(
+            out.ok && out.text.contains("unchanged since the last Read"),
+            "{}",
+            out.text
+        );
+        // A changed file is read again in full, not stubbed.
+        external_write(&file, "gamma\n");
+        let out = read(&c, "note.md").await;
+        assert!(out.ok && out.text.contains("gamma"), "{}", out.text);
+    }
+
+    #[tokio::test]
+    async fn a_large_file_must_be_read_in_ranges() {
+        let vault = std::env::temp_dir().join("bnote-read-size-test");
+        let _ = std::fs::remove_dir_all(&vault);
+        std::fs::create_dir_all(&vault).unwrap();
+        let file = vault.join("big.txt");
+        std::fs::write(&file, "x".repeat(300 * 1024)).unwrap();
+        let c = ctx(&vault, &vault);
+        let out = read(&c, "big.txt").await;
+        assert!(
+            !out.ok && out.text.contains("offset and limit"),
+            "{}",
+            out.text
+        );
+        let out = run(
+            &c,
+            Mode::Auto,
+            "Read",
+            json!({"file_path": "big.txt", "limit": 3}),
+        )
+        .await;
+        assert!(out.ok, "{}", out.text);
+    }
+
+    /// Serves exactly one HTTP response and returns its URL. The tool's client
+    /// is the real one; the test only owns the wire bytes.
+    async fn serve_once(status: &'static str, content_type: &'static str, body: String) -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let response = format!(
+            "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        tokio::spawn(async move {
+            let Ok((mut sock, _)) = listener.accept().await else {
+                return;
+            };
+            let mut buf = [0u8; 4096];
+            let _ = sock.read(&mut buf).await;
+            let _ = sock.write_all(response.as_bytes()).await;
+        });
+        format!("http://{addr}/")
+    }
+
+    #[tokio::test]
+    async fn webfetch_returns_stripped_text_and_reports_the_fetch_url() {
+        let vault = std::env::temp_dir().join("bnote-webfetch-test");
+        let _ = std::fs::remove_dir_all(&vault);
+        std::fs::create_dir_all(&vault).unwrap();
+        let c = ctx(&vault, &vault);
+        let url = serve_once(
+            "200 OK",
+            "text/html; charset=utf-8",
+            "<html><body><h1>Docs</h1><p>Hello</p></body></html>".to_string(),
+        )
+        .await;
+        let out = run(&c, Mode::Auto, "WebFetch", json!({"url": url})).await;
+        assert!(out.ok, "{}", out.text);
+        assert!(
+            out.text.contains("Docs") && out.text.contains("Hello"),
+            "{}",
+            out.text
+        );
+        assert!(
+            out.text.starts_with("http://127.0.0.1:"),
+            "the final URL heads the result: {}",
+            out.text
+        );
+        assert!(!out.text.contains("<h1>"), "HTML must be stripped");
+    }
+
+    #[tokio::test]
+    async fn webfetch_treats_a_non_2xx_response_as_an_error() {
+        let vault = std::env::temp_dir().join("bnote-webfetch-404-test");
+        let _ = std::fs::remove_dir_all(&vault);
+        std::fs::create_dir_all(&vault).unwrap();
+        let c = ctx(&vault, &vault);
+        let url = serve_once(
+            "404 Not Found",
+            "text/html",
+            "<html><body>missing</body></html>".to_string(),
+        )
+        .await;
+        let out = run(&c, Mode::Auto, "WebFetch", json!({"url": url})).await;
+        assert!(!out.ok && out.text.contains("404"), "{}", out.text);
+    }
+
+    #[tokio::test]
+    async fn read_returns_an_image_as_image_content() {
+        let vault = std::env::temp_dir().join("bnote-read-image-test");
+        let _ = std::fs::remove_dir_all(&vault);
+        std::fs::create_dir_all(&vault).unwrap();
+        // The canonical 1x1 transparent PNG: the reader sniffs the signature.
+        const PNG_1PX: &[u8] = &[
+            0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48,
+            0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00,
+            0x00, 0x1F, 0x15, 0xC4, 0x89, 0x00, 0x00, 0x00, 0x0A, 0x49, 0x44, 0x41, 0x54, 0x78,
+            0x9C, 0x63, 0x00, 0x01, 0x00, 0x00, 0x05, 0x00, 0x01, 0x0D, 0x0A, 0x2D, 0xB4, 0x00,
+            0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
+        ];
+        std::fs::write(vault.join("shot.png"), PNG_1PX).unwrap();
+        let c = ctx(&vault, &vault);
+        let out = read(&c, "shot.png").await;
+        assert!(out.ok, "{}", out.text);
+        assert_eq!(out.images.len(), 1);
+        assert_eq!(out.images[0].media_type, "image/png");
+        assert!(out.text.contains("Read image"), "{}", out.text);
+
+        // A model without vision must not be handed an image block.
+        c.vision.store(false, Ordering::SeqCst);
+        let out = read(&c, "shot.png").await;
+        assert!(!out.ok && out.text.contains("no vision"), "{}", out.text);
+        assert!(out.images.is_empty());
+
+        // The extension alone does not make a file an image.
+        let c = ctx(&vault, &vault);
+        std::fs::write(vault.join("fake.png"), "plain text").unwrap();
+        let out = read(&c, "fake.png").await;
+        assert!(
+            !out.ok && out.text.contains("not PNG/JPEG/GIF/WebP"),
+            "{}",
+            out.text
+        );
+    }
+
+    #[tokio::test]
+    async fn read_names_what_it_supports_for_a_binary_file() {
+        let vault = std::env::temp_dir().join("bnote-read-binary-test");
+        let _ = std::fs::remove_dir_all(&vault);
+        std::fs::create_dir_all(&vault).unwrap();
+        std::fs::write(vault.join("blob.bin"), [0xFFu8, 0xFE, 0x00, 0x01]).unwrap();
+        let c = ctx(&vault, &vault);
+        let out = read(&c, "blob.bin").await;
+        assert!(
+            !out.ok && out.text.contains("not UTF-8 text"),
+            "{}",
+            out.text
+        );
+    }
+
+    #[test]
+    fn task_stop_accepts_an_agent_id_without_a_task_id() {
+        let schema = tool_schemas()
+            .iter()
+            .find(|(name, _, _)| *name == "TaskStop")
+            .map(|(_, _, schema)| schema)
+            .expect("TaskStop must be registered");
+        assert!(crate::agent::schema::validate(
+            schema,
+            &json!({"agent_id": "s1-7-agent-1700000000000-1"})
+        )
+        .is_ok());
+        assert!(crate::agent::schema::validate(schema, &json!({"task_id": 3})).is_ok());
     }
 
     #[tokio::test]

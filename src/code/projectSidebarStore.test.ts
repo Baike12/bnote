@@ -161,6 +161,21 @@ describe("refreshGroup", () => {
     expect(groups[1]).toBe(untouched);
   });
 
+  it("an auxiliary session gets no row of its own", async () => {
+    // It lives inside the session it was forked from (the header picker);
+    // listed on its own it would duplicate that entry and take a visible slot.
+    useProjectSidebarStore.setState({ groups: [group("/a", [])] });
+    disk.sessions.set("/a", [
+      meta("main", 1),
+      { ...meta("fork", 3), parent: "main", basedOn: "基于这条消息" },
+      { ...meta("legacy", 2), basedOn: "旧记录" },
+    ]);
+
+    await useProjectSidebarStore.getState().refreshGroup("/a");
+
+    expect(useProjectSidebarStore.getState().groups[0].sessions.map((s) => s.id)).toEqual(["main"]);
+  });
+
   it("ignores a workdir that is not in the list", async () => {
     useProjectSidebarStore.setState({ groups: [group("/a", [])] });
     await useProjectSidebarStore.getState().refreshGroup("/elsewhere");

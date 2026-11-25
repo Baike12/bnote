@@ -394,6 +394,58 @@ pub fn tool_use_error(message: impl AsRef<str>) -> String {
     format!("<tool_use_error>{}</tool_use_error>", message.as_ref())
 }
 
+/// The tool definitions a session advertises: the definition's whitelist from
+/// the built-in schemas, then every tool of the connected MCP servers when the
+/// whitelist names `mcp`.
+///
+/// An MCP tool is a first-class tool: the model calls `mcp__server__tool`
+/// directly, exactly like a built-in, with the schema the server advertised.
+/// They are declared after the built-ins and carry `mcp_server`, so the cache
+/// breakpoint on the last built-in keeps the built-in prefix cached when a
+/// server's catalog changes (see `provider::tool_cache_markers`).
+fn tool_defs_for(def: &super::defs::AgentDefinition, mcp: &super::mcp::McpManager) -> Vec<ToolDef> {
+    let tools = def.effective_tools();
+    if tools.is_empty() {
+        // The study assistant is pure Q&A: it registers no tools and the prompt
+        // does not steer toward them; the model answers from its own knowledge.
+        return Vec::new();
+    }
+    let mut defs: Vec<ToolDef> = super::tools::tool_schemas()
+        .iter()
+        .filter(|(name, _, _)| tools.iter().any(|t| t == name))
+        .map(|(name, description, schema)| ToolDef {
+            name: (*name).to_string(),
+            description: (*description).to_string(),
+            input_schema: schema.clone(),
+            mcp_server: None,
+        })
+        .collect();
+    if def.mcp_enabled() {
+        for tool in mcp.tools().iter() {
+            defs.push(ToolDef {
+                name: tool.name.clone(),
+                description: tool.description.clone(),
+                input_schema: tool.input_schema.clone(),
+                mcp_server: super::mcp::split_name(&tool.name)
+                    .map(|(server, _)| server.to_string()),
+            });
+        }
+    }
+    // The spawnable agent types belong in the tool description (CC's default),
+    // so the model knows what `subagent_type` accepts.
+    if let Some(task) = defs.iter_mut().find(|d| d.name == "Agent") {
+        let listing = super::defs::subagent_listing();
+        if !listing.is_empty() {
+            let mut lines = String::from("\n\nAvailable agent types for subagent_type:");
+            for (id, description) in listing {
+                lines.push_str(&format!("\n- {}: {}", id, description));
+            }
+            task.description.push_str(&lines);
+        }
+    }
+    defs
+}
+
 /// Whether `item` is a message the user typed (rather than one the loop
 /// injected: a reminder, a wakeup, or a tool result).
 fn is_user_prompt(item: &ChatItem) -> bool {
@@ -1224,6 +1276,7 @@ impl Session {
         context_window: u64,
         selection: super::models::ModelSelection,
     ) {
+        self.ctx.vision.store(provider.vision, Ordering::SeqCst);
         if let Ok(mut slot) = self.provider.write() {
             *slot = provider;
         }
@@ -1828,7 +1881,7 @@ impl Session {
                 // MCP tools carry the schema the server advertised; validate it
                 // the same way so a malformed call fails locally and cheaply.
                 self.mcp
-                    .tools
+                    .tools()
                     .iter()
                     .find(|t| t.name == name)
                     .map(|t| t.input_schema.clone())
@@ -1959,72 +2012,21 @@ impl Session {
     }
 
     fn tool_defs(&self) -> Vec<ToolDef> {
-        let tools = self.def.effective_tools();
-        if tools.is_empty() {
-            // The study assistant is pure Q&A: it registers no tools and the prompt
-            // does not steer toward them; the model answers from its own knowledge.
-            return Vec::new();
-        }
-        let mut defs: Vec<ToolDef> = super::tools::tool_schemas()
-            .iter()
-            .filter(|(name, _, _)| tools.iter().any(|t| t == name))
-            .map(|(name, description, schema)| ToolDef {
-                name: (*name).to_string(),
-                description: (*description).to_string(),
-                input_schema: schema.clone(),
-                mcp_server: None,
-            })
-            .collect();
-        if self.def.mcp_enabled() {
-            for tool in &self.mcp.tools {
-                defs.push(ToolDef {
-                    name: tool.name.clone(),
-                    description: tool.description.clone(),
-                    input_schema: tool.input_schema.clone(),
-                    mcp_server: None,
-                });
-            }
-        }
-        // The spawnable agent types belong in the tool description (CC's
-        // default), so the model knows what `subagent_type` accepts.
-        if let Some(task) = defs.iter_mut().find(|d| d.name == "Agent") {
-            let listing = super::defs::subagent_listing();
-            if !listing.is_empty() {
-                let mut lines = String::from("\n\nAvailable agent types for subagent_type:");
-                for (id, description) in listing {
-                    lines.push_str(&format!("\n- {}: {}", id, description));
-                }
-                task.description.push_str(&lines);
-            }
-        }
-        defs
+        tool_defs_for(&self.def, &self.mcp)
     }
 
     async fn execute_tool_shared(&self, name: &str, input: &Value) -> ToolOutput {
-        if let Some(rest) = name.strip_prefix("mcp__") {
+        if name.starts_with("mcp__") {
             if !self.def.mcp_enabled() {
                 return ToolOutput::text(false, tool_use_error("MCP 工具未启用"));
             }
-            let mut parts = rest.splitn(2, "__");
-            let (server, tool) = match (parts.next(), parts.next()) {
-                (Some(s), Some(t)) => (s, t),
-                _ => {
-                    return ToolOutput::text(
-                        false,
-                        tool_use_error(format!("malformed mcp tool name: {}", name)),
-                    )
-                }
+            let Some((server, tool)) = super::mcp::split_name(name) else {
+                return ToolOutput::text(
+                    false,
+                    tool_use_error(format!("malformed mcp tool name: {}", name)),
+                );
             };
-            return match self.mcp.call(server, tool, input).await {
-                Ok((text, is_error)) => {
-                    if is_error {
-                        ToolOutput::text(false, tool_use_error(text))
-                    } else {
-                        ToolOutput::text(true, text)
-                    }
-                }
-                Err(e) => ToolOutput::text(false, tool_use_error(e)),
-            };
+            return self.run_mcp(server, tool, input).await;
         }
         // Session-owned tools (they touch session state, not just the context).
         let name = super::tools::canonical(name);
@@ -2062,9 +2064,8 @@ impl Session {
             "Bash" => {
                 return self.run_bash(input).await;
             }
-            "TaskOutput" | "TaskStop" => {
-                return self.run_bg_control(name, input);
-            }
+            "TaskOutput" => return self.run_bg_control(input),
+            "TaskStop" => return self.stop_task(input),
             "EnterPlanMode" => return self.enter_plan_mode(),
             "ExitPlanMode" => return self.exit_plan_mode(input).await,
             "AskUserQuestion" => {
@@ -2100,6 +2101,19 @@ impl Session {
             };
         }
         super::tools::execute(&self.ctx, &self.skills, name, input, self.permission_mode()).await
+    }
+
+    async fn run_mcp(&self, server: &str, tool: &str, input: &Value) -> ToolOutput {
+        match self.mcp.call(server, tool, input).await {
+            Ok((text, is_error)) => {
+                if is_error {
+                    ToolOutput::text(false, tool_use_error(text))
+                } else {
+                    ToolOutput::text(true, text)
+                }
+            }
+            Err(e) => ToolOutput::text(false, tool_use_error(e)),
+        }
     }
 
     /// The bash tool: foreground commands through the persistent-cwd shell,
@@ -2147,22 +2161,76 @@ impl Session {
         ToolOutput::text(out.ok, out.text)
     }
 
-    fn run_bg_control(&self, name: &str, input: &Value) -> ToolOutput {
-        let id = input["task_id"]
-            .as_u64()
-            .or_else(|| input["id"].as_u64())
-            .unwrap_or(u64::MAX);
+    fn run_bg_control(&self, input: &Value) -> ToolOutput {
+        let id = background_task_id(input);
         let Some(task) = self.ctx.bg.get(id) else {
             return ToolOutput::text(
                 false,
                 tool_use_error(format!("unknown background task: {id}")),
             );
         };
-        if name == "TaskStop" {
-            task.kill();
-            return ToolOutput::text(true, format!("kill signal sent to background task {id}"));
-        }
         ToolOutput::text(true, shell::format_bg_status(&task))
+    }
+
+    /// TaskStop: `agent_id` stops that subagent's run, `task_id` kills a
+    /// background shell task.
+    ///
+    /// Every child owns its abort token (a child of the parent's, so the
+    /// parent's stop still cascades), and `send` resets the token at the start
+    /// of the next turn — a stopped agent stays resumable through SendMessage.
+    fn stop_task(&self, input: &Value) -> ToolOutput {
+        let request = match stop_request(input) {
+            Ok(request) => request,
+            Err(e) => return ToolOutput::text(false, tool_use_error(e)),
+        };
+        match request {
+            StopRequest::Agent(agent) => match self.stop_child(&agent) {
+                None => ToolOutput::text(
+                    false,
+                    tool_use_error(format!("unknown subagent: {agent}")),
+                ),
+                Some(true) => ToolOutput::text(
+                    true,
+                    format!(
+                        "stop signal sent to subagent {agent}: it stops at its next step and reports \"stopped\""
+                    ),
+                ),
+                Some(false) => ToolOutput::text(
+                    true,
+                    format!(
+                        "subagent {agent} is not running; the stop flag is cleared when it is next resumed with SendMessage"
+                    ),
+                ),
+            },
+            StopRequest::Background(id) => {
+                let Some(task) = self.ctx.bg.get(id) else {
+                    return ToolOutput::text(
+                        false,
+                        tool_use_error(format!("unknown background task: {id}")),
+                    );
+                };
+                task.kill();
+                ToolOutput::text(true, format!("kill signal sent to background task {id}"))
+            }
+        }
+    }
+
+    /// Stops one child's running turn. Shared by the panel's stop button
+    /// (`agent_stop_subagent`) and the TaskStop tool, so the abort-token rule
+    /// lives in one place.
+    ///
+    /// Returns whether the child was running when it was stopped; `None` when
+    /// the id names no child of this session. The abort ends only that child's
+    /// loop — this session's turn keeps running.
+    pub fn stop_child(&self, agent_id: &str) -> Option<bool> {
+        let child = self
+            .children
+            .lock()
+            .ok()
+            .and_then(|map| map.get(agent_id).cloned())?;
+        let running = child.running.load(Ordering::SeqCst);
+        child.ctx.abort.abort();
+        Some(running)
     }
 
     /// Anchor directory for bash: the code project root for coding sessions,
@@ -2414,6 +2482,12 @@ impl Session {
             shell: Arc::new(ShellCwd::new()),
             bg: Arc::new(BgRegistry::new()),
             read_paths: Mutex::new(Vec::new()),
+            // A subagent starts with an empty read state on purpose: it does
+            // not inherit the parent transcript, so it has not seen the files
+            // the parent read and must Read them itself before writing.
+            files: Arc::new(super::file_state::FileStateCache::new()),
+            // The child may run on a different model than the parent.
+            vision: std::sync::atomic::AtomicBool::new(child_provider.vision),
             extra_roots: Vec::new(),
             invest_scope: self.ctx.invest_scope.clone(),
         });
@@ -2596,7 +2670,13 @@ impl Session {
         // nothing).
         let parent_handle = self.self_ref.lock().ok().and_then(|g| g.clone());
         let call_id = tool_use_id.to_string();
+        // Claim the child's running flag exactly as a resumed turn does. It is
+        // what makes SendMessage queue during the first run instead of starting
+        // a second loop, and what lets TaskStop say "running" honestly; the
+        // guard inside the task clears it when the run ends.
+        child.running.store(true, Ordering::SeqCst);
         let runner = tauri::async_runtime::spawn(async move {
+            let _running = RunningGuard(runner_child.running.clone());
             // Queue here, not in the caller: a foreground call waiting for a
             // slot must not block the sibling calls of the same batch (they
             // run in parallel), and a background agent holds its own slot.
@@ -2661,7 +2741,7 @@ impl Session {
                 duration_ms: started.elapsed().as_millis() as u64,
                 tokens: usage.map(|u| u.input + u.output).unwrap_or(0),
             });
-            (report, usage, ok)
+            (report, usage, ok, stopped)
         });
         if background {
             // Background subagent: answer immediately; the completion notice
@@ -2674,19 +2754,28 @@ impl Session {
                 .unwrap_or_default();
             let label_bg = ui_label.clone();
             tauri::async_runtime::spawn(async move {
-                let (report, usage, _ok) = match runner.await {
+                let (report, usage, ok, stopped) = match runner.await {
                     Ok(v) => v,
-                    Err(e) => (format!("(子代理 join 失败: {e})"), None, false),
+                    Err(e) => (format!("(子代理 join 失败: {e})"), None, false, false),
                 };
                 let totals = usage
                     .map(|u| format!("\ntotal_tokens: {}", u.input + u.output))
                     .unwrap_or_default();
+                // A stop the model asked for (TaskStop) or the user issued is
+                // not a completion: say so, and keep the partial report.
+                let headline = if stopped {
+                    "已停止"
+                } else if ok {
+                    "已完成"
+                } else {
+                    "已结束(出错)"
+                };
                 let notice = format!(
-                    "<system-reminder>后台子代理 {label_bg} 已完成。报告:\n{report}{totals}\n</system-reminder>"
+                    "<system-reminder>后台子代理 {label_bg} {headline}。报告:\n{report}{totals}\n</system-reminder>"
                 );
                 if let Some(session) = parent.upgrade() {
                     session.emit(AgentEvent::Notice {
-                        text: format!("后台子代理 {label_bg} 完成"),
+                        text: format!("后台子代理 {label_bg} {headline}"),
                     });
                     session.requeue_or_wake(notice);
                 }
@@ -2694,12 +2783,12 @@ impl Session {
             return ToolOutput::text(
                 true,
                 format!(
-                    "Async agent launched successfully.\nagentId: {}\nThe agent is working in the background. You will be notified automatically when it completes.\nDo not duplicate this agent's work. Briefly tell the user what you launched and why.",
+                    "Async agent launched successfully.\nagentId: {}\nThe agent is working in the background. You will be notified automatically when it completes; stop it with TaskStop (agent_id) if it is no longer needed.\nDo not duplicate this agent's work. Briefly tell the user what you launched and why.",
                     child.id
                 ),
             );
         }
-        let (report, usage, _ok) = match runner.await {
+        let (report, usage, _ok, _stopped) = match runner.await {
             Ok(v) => v,
             Err(e) => {
                 return ToolOutput::text(false, tool_use_error(format!("join failed: {}", e)))
@@ -3135,8 +3224,36 @@ fn plan_slug(plan: &str) -> String {
 /// analysis pass organizes the drafting, the sections pin what must survive.
 const COMPACTION_PROMPT: &str = "CRITICAL: Respond with TEXT ONLY. Do NOT call any tools.\n\nYour task is to create a detailed summary of the conversation so far, paying close attention to the user's explicit requests and your previous actions. This summary will be used to continue the work in a fresh context without losing important information.\n\nBefore providing your final summary, wrap your analysis in <analysis> tags to organize your thoughts. In your analysis process, chronologically analyze each message: the user's explicit requests and intents, your approach, key decisions, file names and code snippets, errors and how you fixed them, and any user feedback about doing something differently.\n\nYour summary should include the following sections:\n\n1. Primary Request and Intent: Capture all of the user's explicit requests and intents in detail.\n2. Key Technical Concepts: List all important technical concepts, technologies, and frameworks discussed.\n3. Files and Code Sections: Enumerate specific files and code sections examined, modified, or created, with short code snippets where applicable and why they matter.\n4. Errors and fixes: List errors you ran into and how you fixed them, especially user feedback about doing something differently.\n5. Problem Solving: Document problems solved and any ongoing troubleshooting.\n6. All user messages: List ALL user messages that are not tool results. These are critical for understanding the user's feedback and changing intent.\n7. Pending Tasks: Outline pending tasks you have been explicitly asked to work on.\n8. Current Work: Describe precisely what was being worked on immediately before this summary request.\n9. Optional Next Step: List the next step directly in line with the user's most recent request. If the last task was concluded, say so instead of inventing new work. Include verbatim quotes from the most recent conversation so the next step is unambiguous.\n\nAfter the <analysis> block, output the summary as plain text with the nine numbered sections.\n\nREMINDER: Do NOT call any tools. Respond with plain text only — an <analysis> block followed by a <summary> block. Tool calls will be rejected and you will fail the task.";
 
-/// Builds one session of the given mode from the effective definition.
-/// Shared by `agent_start_session` (the id is assigned there).
+/// The numeric id of a background shell task (`TaskOutput`/`TaskStop`).
+fn background_task_id(input: &Value) -> u64 {
+    input["task_id"]
+        .as_u64()
+        .or_else(|| input["id"].as_u64())
+        .unwrap_or(u64::MAX)
+}
+
+/// What a TaskStop call names: a subagent or a background shell task.
+#[derive(Debug)]
+enum StopRequest {
+    Agent(String),
+    Background(u64),
+}
+
+fn stop_request(input: &Value) -> Result<StopRequest, String> {
+    if let Some(agent) = input["agent_id"]
+        .as_str()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        return Ok(StopRequest::Agent(agent.to_string()));
+    }
+    let id = background_task_id(input);
+    if id == u64::MAX {
+        return Err("pass agent_id (a subagent) or task_id (a background shell task)".into());
+    }
+    Ok(StopRequest::Background(id))
+}
+
 pub struct SessionSeed {
     pub id: String,
     pub mode: SessionMode,
@@ -3169,6 +3286,8 @@ pub struct SessionSeed {
     pub subagent_concurrency: usize,
 }
 
+/// Builds one session of the given mode from the effective definition.
+/// Shared by `agent_start_session` (the id is assigned there).
 pub fn create_session(seed: SessionSeed) -> Session {
     // The agent's runtime files live in the home's `projects/<project>/...`; the
     // project is the code project for coding sessions and the vault otherwise.
@@ -3283,6 +3402,67 @@ pub fn create_session(seed: SessionSeed) -> Session {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn mcp_tools_are_declared_like_builtins_after_them() {
+        let coding = crate::agent::defs::definition("coding").expect("coding");
+        let empty = crate::agent::mcp::McpManager::empty();
+        let names: Vec<String> = tool_defs_for(&coding, &empty)
+            .into_iter()
+            .map(|d| d.name)
+            .collect();
+        assert!(
+            !names
+                .iter()
+                .any(|name| name == "McpSearch" || name == "McpCall"),
+            "the gateway is gone: an MCP tool is called by its own name"
+        );
+
+        let catalog = vec![
+            crate::agent::mcp::McpTool {
+                name: "mcp__browseros__run".into(),
+                description: "run".into(),
+                input_schema: json!({"type": "object"}),
+            },
+            crate::agent::mcp::McpTool {
+                name: "mcp__browseros__tabs".into(),
+                description: "tabs".into(),
+                input_schema: json!({"type": "object"}),
+            },
+        ];
+        let mcp = crate::agent::mcp::McpManager::with_tools(catalog);
+        let defs = tool_defs_for(&coding, &mcp);
+        // The catalog follows the built-ins, sorted, each row carrying its
+        // server so the cache marker lands on the last built-in.
+        let tail: Vec<(&str, Option<&str>)> = defs
+            .iter()
+            .rev()
+            .take(2)
+            .rev()
+            .map(|d| (d.name.as_str(), d.mcp_server.as_deref()))
+            .collect();
+        assert_eq!(
+            tail,
+            vec![
+                ("mcp__browseros__run", Some("browseros")),
+                ("mcp__browseros__tabs", Some("browseros")),
+            ]
+        );
+        assert!(defs[..defs.len() - 2]
+            .iter()
+            .all(|d| d.mcp_server.is_none()));
+        assert_eq!(
+            defs.iter().map(|d| d.name.clone()).collect::<Vec<_>>(),
+            tool_defs_for(&coding, &mcp)
+                .into_iter()
+                .map(|d| d.name)
+                .collect::<Vec<_>>(),
+            "the advertised list must be byte-stable for an unchanged catalog"
+        );
+
+        let study = crate::agent::defs::definition("study").expect("study");
+        assert!(tool_defs_for(&study, &empty).is_empty());
+    }
 
     /// The "edit and resend" rewind: the prompt and the whole turn it opened
     /// go away, so the model never sees the old question or a half reply.
@@ -3413,6 +3593,30 @@ mod tests {
         let mut with_report = items.clone();
         with_report.push(assistant_text("# Report"));
         assert_eq!(last_assistant_text(&with_report), "# Report");
+    }
+
+    #[test]
+    fn a_background_task_id_reads_task_id_or_the_legacy_id() {
+        assert_eq!(background_task_id(&json!({"task_id": 3})), 3);
+        assert_eq!(background_task_id(&json!({"id": 4})), 4);
+        assert_eq!(background_task_id(&json!({})), u64::MAX);
+    }
+
+    #[test]
+    fn task_stop_names_a_subagent_or_a_background_task() {
+        // agent_id wins; a blank one falls through to the shell task; no id at
+        // all is an actionable error rather than "unknown task 18446744073709551615".
+        match stop_request(&json!({"agent_id": "s1-7-agent-1"})) {
+            Ok(StopRequest::Agent(id)) => assert_eq!(id, "s1-7-agent-1"),
+            _ => panic!("agent_id must select the subagent"),
+        }
+        match stop_request(&json!({"agent_id": "  ", "task_id": 5})) {
+            Ok(StopRequest::Background(id)) => assert_eq!(id, 5),
+            _ => panic!("a blank agent_id must fall through"),
+        }
+        assert!(stop_request(&json!({}))
+            .expect_err("no id is an error")
+            .contains("agent_id"));
     }
 
     #[test]

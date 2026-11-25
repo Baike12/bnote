@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef } from "react";
 
+import { fuzzyMatchPath, fuzzyMatchTerms } from "@/lib/fuzzy";
 import { buildSwitcherResults } from "@/lib/switcher";
 import type { SkillInfo } from "@/lib/tauri";
 
@@ -24,6 +25,30 @@ export const BUILTIN_COMMANDS: { name: string; description: string }[] = [
 ];
 
 /**
+ * How well a `/name` answers the query. Name matches use the fuzzy matcher, so
+ * initials and typos still land (`prfm` → `bnote-performance`, `co` →
+ * `uncode`) instead of only substrings. Description-only matches sit below
+ * every name match: they stay reachable but never outrank a named skill.
+ */
+function commandScore(name: string, query: string): number | null {
+  if (!query) return 0;
+  const lower = name.toLowerCase();
+  if (lower === query) return 1000;
+  const prefix = lower.startsWith(query) ? 400 : 0;
+  const match = fuzzyMatchPath(query, lower);
+  if (!prefix && !match) return null;
+  return prefix + (match?.score ?? 0);
+}
+
+function skillScore(skill: SkillInfo, query: string): number | null {
+  if (!query) return 0;
+  const nameScore = commandScore(skill.name, query);
+  if (nameScore !== null) return nameScore;
+  const match = fuzzyMatchTerms(query, skill.description.toLowerCase());
+  return match ? -100 + Math.min(match.score, 50) : null;
+}
+
+/**
  * Completion candidates for the input box, CC's suggestion state machine in
  * miniature:
  * - `/` at the start of a line: built-in commands first, then skills (name and
@@ -46,37 +71,38 @@ export function buildSuggestItems(input: {
   if (!trigger) return [];
   if (trigger.kind === "skill") {
     const q = trigger.query.trim().toLowerCase();
-    const builtins: SuggestItem[] = BUILTIN_COMMANDS.filter(
-      (c) => !q || c.name.toLowerCase().startsWith(q),
-    ).map((c) => ({
-      insert: `/${c.name}`,
-      title: `/${c.name}`,
-      subtitle: c.description,
-      kind: "builtin",
-    }));
-    const matched = skills.filter((s) => {
-      if (!q) return true;
-      return s.name.toLowerCase().includes(q) || s.description.toLowerCase().includes(q);
-    });
-    // Prefix matches first, the rest sorted stably by name
-    matched.sort((a, b) => {
-      const ap = a.name.toLowerCase().startsWith(q) ? 0 : 1;
-      const bp = b.name.toLowerCase().startsWith(q) ? 0 : 1;
-      if (ap !== bp) return ap - bp;
-      return a.name.localeCompare(b.name);
-    });
-    const skillItems: SuggestItem[] = matched.map((s) => ({
-      insert: `/${s.name}`,
-      title: `/${s.name}`,
-      subtitle: s.description || s.path,
-      kind: "skill",
-    }));
-    // Exact-name candidates win no matter which list they came from (CC's
-    // exact > prefix > fuzzy ordering, flattened to two tiers here). The list
-    // is complete: the popup scrolls, the keyboard walk scrolls it (CC shows
-    // every command, a window of items at a time).
-    const exact = (item: SuggestItem) => (item.title.slice(1).toLowerCase() === q ? 0 : 1);
-    return [...builtins, ...skillItems].sort((a, b) => exact(a) - exact(b));
+    // The list is complete (the popup scrolls and the keyboard walk scrolls
+    // it), ordered by how well the name answers the query: exact, then prefix,
+    // then any name match, then description-only matches.
+    const scored: { item: SuggestItem; score: number }[] = [];
+    for (const command of BUILTIN_COMMANDS) {
+      const score = commandScore(command.name, q);
+      if (score === null) continue;
+      scored.push({
+        item: {
+          insert: `/${command.name}`,
+          title: `/${command.name}`,
+          subtitle: command.description,
+          kind: "builtin",
+        },
+        score,
+      });
+    }
+    for (const skill of [...skills].sort((a, b) => a.name.localeCompare(b.name))) {
+      const score = skillScore(skill, q);
+      if (score === null) continue;
+      scored.push({
+        item: {
+          insert: `/${skill.name}`,
+          title: `/${skill.name}`,
+          subtitle: skill.description || skill.path,
+          kind: "skill",
+        },
+        score,
+      });
+    }
+    // Stable: equal scores keep the order above (built-ins first, skills by name).
+    return scored.sort((a, b) => b.score - a.score).map(({ item }) => item);
   }
   // A project index that has not loaded yet yields no file candidates rather
   // than silently falling back to the vault: the two stores are unrelated.

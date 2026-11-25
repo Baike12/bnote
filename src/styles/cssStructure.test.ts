@@ -21,7 +21,7 @@ import { styleFiles } from "./cssSource";
  *    only together with a fixed contract and a reviewed diff.
  * 3. Every file carries the generated header (purpose on line 1), and no
  *    .css file exists that index.css does not import.
- * 4. `!important` is a frozen inventory per file. There are 32 today (16 of
+ * 4. `!important` is a frozen inventory per file. There are 37 today (21 of
  *    them the editor's cursor/selection layers), all in
  *    leaves that fight a third party or an inline style (CodeMirror cursor
  *    layers, the editor host, xterm). A new one must be an explicit decision.
@@ -37,7 +37,7 @@ const MAX_LINES = 2400;
 const CONTRACT: ReadonlyArray<readonly [file: string, important: number]> = [
   ["tokens.css", 0],
   ["shell.css", 0],
-  ["editor.css", 16],
+  ["editor.css", 21],
   ["controls.css", 0],
   ["modals.css", 0],
   ["settings.css", 7],

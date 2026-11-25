@@ -346,13 +346,37 @@ pub fn sanitize_path(path: &str) -> String {
 }
 
 /// FNV-1a 64-bit: stable across runs and platforms (no dependency).
-fn fnv1a(bytes: &[u8]) -> u64 {
+pub(crate) fn fnv1a(bytes: &[u8]) -> u64 {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
     for byte in bytes {
         hash ^= *byte as u64;
         hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
     }
     hash
+}
+
+/// `project` plus its ancestors up to and including the git root (or the
+/// user's home directory / filesystem root when there is no repository),
+/// nearest first. The instruction walk reverses it (root first, so the deepest
+/// file reads last and wins); skill discovery keeps it (the nearest
+/// `.agents/skills` has the highest precedence).
+pub fn project_ancestors(project: &Path) -> Vec<PathBuf> {
+    // `$HOME` itself, not the agent home: the walk stops at the user's home
+    // directory regardless of where the vault (and its `.bnote`) lives.
+    let home = Some(user_home());
+    let mut dirs = Vec::new();
+    let mut cur = Some(project.to_path_buf());
+    while let Some(dir) = cur {
+        dirs.push(dir.clone());
+        if dir.join(".git").exists() {
+            break;
+        }
+        if home.as_ref().is_some_and(|h| dir == *h) {
+            break;
+        }
+        cur = dir.parent().map(|p| p.to_path_buf());
+    }
+    dirs
 }
 
 /// `<home>/projects/<sanitized project root>`.

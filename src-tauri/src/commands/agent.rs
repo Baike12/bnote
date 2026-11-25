@@ -150,21 +150,18 @@ pub async fn agent_start_session(
         None
     };
     let layered = crate::agent::settings::load(agent_mode, &mode_root, settings_project);
+    // A project's own servers start only after the user approved that exact
+    // definition; the user scope is the user's own file and always runs.
+    let mut mcp_servers = layered.settings.mcp_servers.clone();
+    crate::agent::trust::TrustStore::load(settings_project)
+        .retain_trusted(&mut mcp_servers, &layered.mcp_sources);
     // Only MCP-enabled sessions pay for connecting servers.
     let mcp = if def.mcp_enabled() {
         Arc::new(
-            McpManager::connect_all(
-                &layered.settings.mcp_servers,
-                &layered.settings.disabled_mcp_servers,
-            )
-            .await,
+            McpManager::connect_all(&mcp_servers, &layered.settings.disabled_mcp_servers).await,
         )
     } else {
-        Arc::new(McpManager {
-            connections: Default::default(),
-            tools: Vec::new(),
-            errors: Vec::new(),
-        })
+        Arc::new(McpManager::empty())
     };
     let skills = Arc::new(SkillRegistry::discover(
         agent_mode,
@@ -203,7 +200,7 @@ pub async fn agent_start_session(
         .and_then(|v| v.file_name().map(|s| s.to_string_lossy().to_string()))
         .unwrap_or_default();
     let current_note = state.current_note.lock().ok().and_then(|n| n.clone());
-    let mcp_names: Vec<String> = mcp.tools.iter().map(|t| t.name.clone()).collect();
+    let mcp_names: Vec<String> = mcp.tools().iter().map(|t| t.name.clone()).collect();
     // `additionalDirectories` widens the writable roots for this session.
     let extra_roots: Vec<PathBuf> = layered
         .settings
@@ -223,6 +220,8 @@ pub async fn agent_start_session(
         shell: Arc::new(ShellCwd::new()),
         bg: Arc::new(BgRegistry::new()),
         read_paths: std::sync::Mutex::new(Vec::new()),
+        files: Arc::new(crate::agent::file_state::FileStateCache::new()),
+        vision: std::sync::atomic::AtomicBool::new(resolved.vision),
         extra_roots,
         invest_scope: invest_scope.clone(),
     });
@@ -288,7 +287,7 @@ pub async fn agent_start_session(
     Ok(serde_json::json!({
         "sessionId": id,
         "skills": session.skills.skills,
-        "mcpTools": mcp.tools.iter().map(|t| t.name.clone()).collect::<Vec<_>>(),
+        "mcpTools": mcp.tools().iter().map(|t| t.name.clone()).collect::<Vec<_>>(),
         "mcpErrors": mcp.errors.clone(),
         "definition": {
             "id": def.id,
@@ -491,6 +490,115 @@ pub async fn agent_list_skills(
             &settings.disabled_skills,
         )
         .skills)
+    })
+    .await
+    .map_err(|e| format!("JOIN_FAILED: {}", e))?
+}
+
+/// The settings page's MCP list: every configured server of the current mode,
+/// with the scope that defines it (the vault's user file, the code project's
+/// checked-in file, its local override) and the result of a live check.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpStatusReport {
+    pub mode: String,
+    pub project: Option<String>,
+    /// Whether the mode's tool set registers `mcp` at all. A mode without it
+    /// (invest) can hold a server list but never connects one.
+    pub mcp_enabled: bool,
+    pub servers: Vec<crate::agent::mcp::McpServerStatus>,
+}
+
+/// Checks MCP connectivity for the settings page. The check really connects
+/// (and lists tools), because a configured server that cannot start is the
+/// case the page exists to show; connections are dropped when the check ends.
+#[tauri::command]
+pub async fn agent_mcp_status(
+    state: State<'_, AppState>,
+    mode: String,
+    workdir: Option<String>,
+) -> CmdResult<McpStatusReport> {
+    let agent_mode = crate::agent::home::AgentMode::parse(&mode)
+        .ok_or_else(|| format!("INVALID_MODE: {mode}"))?;
+    let vault = state.vault();
+    let project = workdir
+        .map(PathBuf::from)
+        .filter(|path| path.is_dir() && agent_mode.reads_project());
+    let (loaded, trust) = {
+        let settings_project = project.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            let root = crate::agent::home::mode_root(agent_mode, vault.as_deref());
+            let loaded =
+                crate::agent::settings::load(agent_mode, &root, settings_project.as_deref());
+            // The approvals are a small file; loading them next to the settings
+            // keeps the whole read on one worker, not on the command thread.
+            let trust = crate::agent::trust::TrustStore::load(settings_project.as_deref());
+            (loaded, trust)
+        })
+        .await
+        .map_err(|e| format!("JOIN_FAILED: {}", e))?
+    };
+    let mcp_enabled = defs::definition(agent_mode.id())
+        .map(|def| def.mcp_enabled())
+        .unwrap_or(false);
+    let servers = crate::agent::mcp::probe_all(
+        &loaded.settings.mcp_servers,
+        &loaded.settings.disabled_mcp_servers,
+        &loaded.mcp_sources,
+        &trust,
+        mcp_enabled,
+    )
+    .await;
+    Ok(McpStatusReport {
+        mode: agent_mode.id().to_string(),
+        project: project.map(|path| path.to_string_lossy().to_string()),
+        mcp_enabled,
+        servers,
+    })
+}
+
+/// Approves one project-scope MCP server: records the digest of its current
+/// definition in the vault (`trusted-mcp.json`), which is what lets a session
+/// start it and the status check spawn it. The definition is read again here
+/// rather than taken from the UI, so a stale page cannot approve something
+/// else.
+#[tauri::command]
+pub async fn agent_trust_mcp_server(
+    state: State<'_, AppState>,
+    mode: String,
+    workdir: String,
+    name: String,
+) -> CmdResult<()> {
+    let agent_mode = crate::agent::home::AgentMode::parse(&mode)
+        .ok_or_else(|| format!("INVALID_MODE: {mode}"))?;
+    let vault = state.vault();
+    let project = PathBuf::from(&workdir);
+    if !agent_mode.reads_project() || !project.is_dir() {
+        return Err(format!("INVALID_WORKDIR: {} 不是代码项目", workdir));
+    }
+    let loaded_project = project.clone();
+    let loaded = tauri::async_runtime::spawn_blocking(move || {
+        let root = crate::agent::home::mode_root(agent_mode, vault.as_deref());
+        crate::agent::settings::load(agent_mode, &root, Some(&loaded_project))
+    })
+    .await
+    .map_err(|e| format!("JOIN_FAILED: {}", e))?;
+    let cfg = loaded
+        .settings
+        .mcp_servers
+        .get(&name)
+        .cloned()
+        .ok_or_else(|| format!("UNKNOWN_SERVER: {name} 不在当前配置里"))?;
+    let scope = loaded
+        .mcp_sources
+        .get(&name)
+        .map(|source| source.scope)
+        .unwrap_or(crate::agent::settings::McpScope::User);
+    if scope == crate::agent::settings::McpScope::User {
+        return Err(format!("ALREADY_TRUSTED: {name} 来自用户级配置"));
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::agent::trust::TrustStore::load(Some(&project)).approve(&name, &cfg)
     })
     .await
     .map_err(|e| format!("JOIN_FAILED: {}", e))?
@@ -756,22 +864,12 @@ pub fn agent_stop_subagent(
     session_id: String,
     agent_id: String,
 ) -> CmdResult<bool> {
-    let child = {
+    let parent = {
         let registry = state.sessions.lock().map_err(|e| e.to_string())?;
-        let parent = registry
-            .get(&session_id)
-            .ok_or_else(|| "SESSION_NOT_FOUND".to_string())?;
-        let found = parent
-            .children
-            .lock()
-            .map_err(|e| e.to_string())?
-            .get(&agent_id)
-            .cloned();
-        found
-    };
-    let Some(child) = child else { return Ok(false) };
-    child.ctx.abort.abort();
-    Ok(true)
+        registry.get(&session_id).cloned()
+    }
+    .ok_or_else(|| "SESSION_NOT_FOUND".to_string())?;
+    Ok(parent.stop_child(&agent_id).is_some())
 }
 
 /// The composer's context card: rough per-part context sizes (estimated

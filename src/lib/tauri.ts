@@ -575,6 +575,15 @@ export const agentApi = {
     invoke<string>("agent_read_skill", { mode, workdir, name }),
   /** The code project's file index for the `@` completion (gitignore respected, capped at 2000). */
   listProjectFiles: (workdir: string) => invoke<string[]>("agent_list_project_files", { workdir }),
+  /**
+   * The settings page's MCP list: every configured server with its scope and a
+   * live check result. The check really connects and lists tools, then closes.
+   */
+  mcpStatus: (mode: AgentMode, workdir?: string | null) =>
+    invoke<McpStatusReport>("agent_mcp_status", { mode, workdir: workdir ?? null }),
+  /** Approves one project-scope server's current definition (the vault records its digest). */
+  trustMcpServer: (mode: AgentMode, workdir: string, name: string) =>
+    invoke<void>("agent_trust_mcp_server", { mode, workdir, name }),
   send: (sessionId: string, text: string, images: AgentImage[] = []) =>
     invoke<void>("agent_send", { sessionId, text, images }),
   /**
@@ -715,6 +724,43 @@ export interface AgentSkillRootInfo {
   exists: boolean;
 }
 
+/** Where an MCP server is defined: the vault's user file or the code project's files. */
+export type McpScope = "user" | "project" | "local";
+
+/** One row of the settings page's MCP list: a live-check snapshot. */
+export interface McpServerStatus {
+  name: string;
+  scope: McpScope;
+  /** The settings file the winning definition came from. */
+  source: string;
+  transport: "stdio" | "http";
+  /** The command line or URL (never env values or headers). */
+  target: string;
+  enabled: boolean;
+  /**
+   * Whether a session may start it: a project-scope server starts only after
+   * its exact definition was approved (`agent_trust_mcp_server`); the user
+   * scope always does.
+   */
+  trusted: boolean;
+  /**
+   * `connected` / `error` from the check, `disabled` from the toggle,
+   * `untrusted` for a project server nobody approved, `unused` when the mode
+   * has no MCP tool. `unknown` is the frontend's pre-check row.
+   */
+  state: "connected" | "error" | "disabled" | "untrusted" | "unused" | "unknown";
+  tools: number;
+  error: string | null;
+}
+
+export interface McpStatusReport {
+  mode: AgentMode;
+  project: string | null;
+  /** Whether the mode's tool set registers `mcp` at all. */
+  mcpEnabled: boolean;
+  servers: McpServerStatus[];
+}
+
 /** Everything the settings page shows about where a mode's files live. */
 export interface AgentModePaths {
   mode: AgentMode;
@@ -852,6 +898,16 @@ export const homeApi = {
   readModeSettings: (mode: AgentMode) => invoke<string>("agent_read_mode_settings", { mode }),
   writeModeSettings: (mode: AgentMode, contents: string) =>
     invoke<void>("agent_write_mode_settings", { mode, contents }),
+  /** The raw text of one MCP scope's settings file (`user`, `project`, `local`). */
+  readSettingsScope: (mode: AgentMode, workdir: string | null, scope: McpScope) =>
+    invoke<string>("agent_read_settings_scope", { mode, workdir, scope }),
+  /** Writes one MCP scope's settings file (validated as a JSON object). */
+  writeSettingsScope: (
+    mode: AgentMode,
+    workdir: string | null,
+    scope: McpScope,
+    contents: string,
+  ) => invoke<void>("agent_write_settings_scope", { mode, workdir, scope, contents }),
   readModeInstructions: (mode: AgentMode) =>
     invoke<string | null>("agent_read_mode_instructions", { mode }),
   writeModeInstructions: (mode: AgentMode, contents: string) =>
