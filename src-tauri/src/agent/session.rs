@@ -384,6 +384,62 @@ pub fn tool_use_error(message: impl AsRef<str>) -> String {
     format!("<tool_use_error>{}</tool_use_error>", message.as_ref())
 }
 
+/// The tool definitions a session advertises: the definition's whitelist from
+/// the built-in schemas, plus the two MCP tools when the whitelist names `mcp`.
+///
+/// An MCP server's own tools are never listed. Their schemas are what change
+/// when a server restarts or upgrades, and the request's tool block sits at the
+/// very front of the cached prefix, so listing them would make every server
+/// change re-bill the whole conversation. The model fetches a schema through
+/// McpSearch (the result rides in the conversation tail) and runs it with
+/// McpCall.
+fn tool_defs_for(def: &super::defs::AgentDefinition) -> Vec<ToolDef> {
+    let tools = def.effective_tools();
+    if tools.is_empty() {
+        // The study assistant is pure Q&A: it registers no tools and the prompt
+        // does not steer toward them; the model answers from its own knowledge.
+        return Vec::new();
+    }
+    let mut defs: Vec<ToolDef> = super::tools::tool_schemas()
+        .iter()
+        .filter(|(name, _, _)| tools.iter().any(|t| t == name))
+        .map(|(name, description, schema)| ToolDef {
+            name: (*name).to_string(),
+            description: (*description).to_string(),
+            input_schema: schema.clone(),
+            mcp_server: None,
+        })
+        .collect();
+    if def.mcp_enabled() {
+        for name in ["McpSearch", "McpCall"] {
+            if let Some((registered, description, schema)) = super::tools::tool_schemas()
+                .iter()
+                .find(|(registered, _, _)| *registered == name)
+            {
+                defs.push(ToolDef {
+                    name: (*registered).to_string(),
+                    description: (*description).to_string(),
+                    input_schema: schema.clone(),
+                    mcp_server: None,
+                });
+            }
+        }
+    }
+    // The spawnable agent types belong in the tool description (CC's default),
+    // so the model knows what `subagent_type` accepts.
+    if let Some(task) = defs.iter_mut().find(|d| d.name == "Agent") {
+        let listing = super::defs::subagent_listing();
+        if !listing.is_empty() {
+            let mut lines = String::from("\n\nAvailable agent types for subagent_type:");
+            for (id, description) in listing {
+                lines.push_str(&format!("\n- {}: {}", id, description));
+            }
+            task.description.push_str(&lines);
+        }
+    }
+    defs
+}
+
 /// Whether `item` is a message the user typed (rather than one the loop
 /// injected: a reminder, a wakeup, or a tool result).
 fn is_user_prompt(item: &ChatItem) -> bool {
@@ -1870,72 +1926,24 @@ impl Session {
     }
 
     fn tool_defs(&self) -> Vec<ToolDef> {
-        let tools = self.def.effective_tools();
-        if tools.is_empty() {
-            // The study assistant is pure Q&A: it registers no tools and the prompt
-            // does not steer toward them; the model answers from its own knowledge.
-            return Vec::new();
-        }
-        let mut defs: Vec<ToolDef> = super::tools::tool_schemas()
-            .iter()
-            .filter(|(name, _, _)| tools.iter().any(|t| t == name))
-            .map(|(name, description, schema)| ToolDef {
-                name: (*name).to_string(),
-                description: (*description).to_string(),
-                input_schema: schema.clone(),
-                mcp_server: None,
-            })
-            .collect();
-        if self.def.mcp_enabled() {
-            for tool in &self.mcp.tools {
-                defs.push(ToolDef {
-                    name: tool.name.clone(),
-                    description: tool.description.clone(),
-                    input_schema: tool.input_schema.clone(),
-                    mcp_server: None,
-                });
-            }
-        }
-        // The spawnable agent types belong in the tool description (CC's
-        // default), so the model knows what `subagent_type` accepts.
-        if let Some(task) = defs.iter_mut().find(|d| d.name == "Agent") {
-            let listing = super::defs::subagent_listing();
-            if !listing.is_empty() {
-                let mut lines = String::from("\n\nAvailable agent types for subagent_type:");
-                for (id, description) in listing {
-                    lines.push_str(&format!("\n- {}: {}", id, description));
-                }
-                task.description.push_str(&lines);
-            }
-        }
-        defs
+        tool_defs_for(&self.def)
     }
 
     async fn execute_tool_shared(&self, name: &str, input: &Value) -> ToolOutput {
-        if let Some(rest) = name.strip_prefix("mcp__") {
+        // A directly named MCP tool still runs (an old transcript, or a model
+        // that guessed the name), but the tools are advertised through
+        // McpSearch/McpCall so the request's tool block stays fixed.
+        if name.starts_with("mcp__") {
             if !self.def.mcp_enabled() {
                 return ToolOutput::text(false, tool_use_error("MCP 工具未启用"));
             }
-            let mut parts = rest.splitn(2, "__");
-            let (server, tool) = match (parts.next(), parts.next()) {
-                (Some(s), Some(t)) => (s, t),
-                _ => {
-                    return ToolOutput::text(
-                        false,
-                        tool_use_error(format!("malformed mcp tool name: {}", name)),
-                    )
-                }
+            let Some((server, tool)) = super::mcp::split_name(name) else {
+                return ToolOutput::text(
+                    false,
+                    tool_use_error(format!("malformed mcp tool name: {}", name)),
+                );
             };
-            return match self.mcp.call(server, tool, input).await {
-                Ok((text, is_error)) => {
-                    if is_error {
-                        ToolOutput::text(false, tool_use_error(text))
-                    } else {
-                        ToolOutput::text(true, text)
-                    }
-                }
-                Err(e) => ToolOutput::text(false, tool_use_error(e)),
-            };
+            return self.run_mcp(server, tool, input).await;
         }
         // Session-owned tools (they touch session state, not just the context).
         let name = super::tools::canonical(name);
@@ -1975,6 +1983,8 @@ impl Session {
             }
             "TaskOutput" => return self.run_bg_control(input),
             "TaskStop" => return self.stop_task(input),
+            "McpSearch" => return self.mcp_search(input),
+            "McpCall" => return self.mcp_call(input).await,
             "EnterPlanMode" => return self.enter_plan_mode(),
             "ExitPlanMode" => return self.exit_plan_mode(input).await,
             "AskUserQuestion" => {
@@ -2010,6 +2020,91 @@ impl Session {
             };
         }
         super::tools::execute(&self.ctx, &self.skills, name, input, self.permission_mode()).await
+    }
+
+    /// McpSearch: keyword search over the session's MCP catalog. The schemas
+    /// ride in the tool result — the tail of the conversation — which is the
+    /// whole point: the request's tool block never carries a server's schema,
+    /// so a server changing cannot invalidate the cached prefix.
+    fn mcp_search(&self, input: &Value) -> ToolOutput {
+        if self.mcp.tools.is_empty() {
+            return ToolOutput::text(true, "没有已连接的 MCP 工具。");
+        }
+        let query = input["query"].as_str().unwrap_or("").trim();
+        let limit = input["limit"].as_u64().unwrap_or(5).clamp(1, 20) as usize;
+        let matches = super::mcp::search(&self.mcp.tools, query, limit);
+        if matches.is_empty() {
+            let names: Vec<&str> = self.mcp.tools.iter().map(|t| t.name.as_str()).collect();
+            return ToolOutput::text(
+                true,
+                format!(
+                    "没有匹配「{query}」的 MCP 工具。目录里有 {} 个:{}",
+                    names.len(),
+                    names.join(", ")
+                ),
+            );
+        }
+        let mut text = String::new();
+        for tool in matches {
+            text.push_str(&format!(
+                "{}\n{}\ninput_schema: {}\n\n",
+                tool.name, tool.description, tool.input_schema
+            ));
+        }
+        text.push_str(
+            "用 McpCall 调用其中一个:{\"name\": \"mcp__server__tool\", \"arguments\": {...}}",
+        );
+        ToolOutput::text(true, text)
+    }
+
+    /// McpCall: run one catalog tool with a validated argument object.
+    async fn mcp_call(&self, input: &Value) -> ToolOutput {
+        let Some(qualified) = input["name"]
+            .as_str()
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+        else {
+            return ToolOutput::text(
+                false,
+                tool_use_error("name 不能为空,用 McpSearch 查到限定名"),
+            );
+        };
+        let Some(tool) = self.mcp.tools.iter().find(|tool| tool.name == qualified) else {
+            return ToolOutput::text(
+                false,
+                tool_use_error(format!("未连接的 MCP 工具:{qualified};先用 McpSearch 查找")),
+            );
+        };
+        let arguments = input
+            .get("arguments")
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!({}));
+        if let Err(error) = super::schema::validate(&tool.input_schema, &arguments) {
+            return ToolOutput::text(
+                false,
+                tool_use_error(format!("参数不符合 {qualified} 的 schema:{error}")),
+            );
+        }
+        let Some((server, bare_tool)) = super::mcp::split_name(qualified) else {
+            return ToolOutput::text(
+                false,
+                tool_use_error(format!("malformed mcp tool name: {qualified}")),
+            );
+        };
+        self.run_mcp(server, bare_tool, &arguments).await
+    }
+
+    async fn run_mcp(&self, server: &str, tool: &str, input: &Value) -> ToolOutput {
+        match self.mcp.call(server, tool, input).await {
+            Ok((text, is_error)) => {
+                if is_error {
+                    ToolOutput::text(false, tool_use_error(text))
+                } else {
+                    ToolOutput::text(true, text)
+                }
+            }
+            Err(e) => ToolOutput::text(false, tool_use_error(e)),
+        }
     }
 
     /// The bash tool: foreground commands through the persistent-cwd shell,
@@ -3294,6 +3389,28 @@ pub fn create_session(seed: SessionSeed) -> Session {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn the_mcp_catalog_is_never_advertised_as_tools() {
+        let coding = crate::agent::defs::definition("coding").expect("coding");
+        let names: Vec<String> = tool_defs_for(&coding).into_iter().map(|d| d.name).collect();
+        assert!(names.iter().any(|name| name == "McpSearch"));
+        assert!(names.iter().any(|name| name == "McpCall"));
+        assert!(
+            !names.iter().any(|name| name.starts_with("mcp__")),
+            "server schemas stay out of the request's tool block: {names:?}"
+        );
+        assert_eq!(
+            names,
+            tool_defs_for(&coding)
+                .into_iter()
+                .map(|d| d.name)
+                .collect::<Vec<_>>(),
+            "the advertised list must be byte-stable"
+        );
+        let study = crate::agent::defs::definition("study").expect("study");
+        assert!(tool_defs_for(&study).is_empty());
+    }
 
     /// The "edit and resend" rewind: the prompt and the whole turn it opened
     /// go away, so the model never sees the old question or a half reply.

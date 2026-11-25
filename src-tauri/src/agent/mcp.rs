@@ -91,6 +91,84 @@ pub struct McpServerStatus {
     pub error: Option<String>,
 }
 
+/// Upper bound on one MCP tool description. Tool schemas no longer travel in
+/// the request prefix, but a search result must stay small enough to read: the
+/// same 2 KB cap CC and grok apply.
+const MAX_DESCRIPTION: usize = 2048;
+
+/// Whitespace collapsed and cut at [`MAX_DESCRIPTION`] characters, suffix
+/// included, so re-running it on its own output changes nothing.
+fn capped_description(description: &str) -> String {
+    const SUFFIX: &str = " …[truncated]";
+    let collapsed = description.split_whitespace().collect::<Vec<_>>().join(" ");
+    if collapsed.chars().count() <= MAX_DESCRIPTION {
+        return collapsed;
+    }
+    let keep = MAX_DESCRIPTION.saturating_sub(SUFFIX.chars().count());
+    let mut cut: String = collapsed.chars().take(keep).collect();
+    cut.push_str(SUFFIX);
+    cut
+}
+
+/// Sorts the catalog by qualified name, drops duplicate names (the first keeps
+/// its definition), and caps every description. Two sessions against the same
+/// servers then hold byte-identical catalogs, whatever order `tools/list`
+/// answered in, and a search result is bounded.
+pub fn normalize_tools(mut tools: Vec<McpTool>) -> Vec<McpTool> {
+    tools.sort_by(|left, right| left.name.cmp(&right.name));
+    tools.dedup_by(|left, right| left.name == right.name);
+    for tool in &mut tools {
+        tool.description = capped_description(&tool.description);
+    }
+    tools
+}
+
+/// The catalog rows matching `query`, best first. Every token must appear in
+/// the qualified name or the description (AND, so a two-word query does not
+/// match half the catalog); a hit in the name scores above a hit in the
+/// description, and ties break by name so the rendered result is stable.
+/// An empty query returns the first `limit` rows in name order.
+pub fn search<'a>(tools: &'a [McpTool], query: &str, limit: usize) -> Vec<&'a McpTool> {
+    let tokens: Vec<String> = query
+        .split_whitespace()
+        .map(|token| token.to_lowercase())
+        .collect();
+    if tokens.is_empty() {
+        return tools.iter().take(limit).collect();
+    }
+    let mut scored: Vec<(usize, &McpTool)> = tools
+        .iter()
+        .filter_map(|tool| {
+            let name = tool.name.to_lowercase();
+            let description = tool.description.to_lowercase();
+            if !tokens
+                .iter()
+                .all(|token| name.contains(token) || description.contains(token))
+            {
+                return None;
+            }
+            let score: usize = tokens
+                .iter()
+                .map(|token| if name.contains(token) { 3usize } else { 1usize })
+                .sum();
+            Some((score, tool))
+        })
+        .collect();
+    scored.sort_by(|left, right| right.0.cmp(&left.0).then(left.1.name.cmp(&right.1.name)));
+    scored
+        .into_iter()
+        .take(limit)
+        .map(|(_, tool)| tool)
+        .collect()
+}
+
+/// `mcp__<server>__<tool>` split into its two halves. The server name can
+/// contain a single underscore; only `__` separates.
+pub fn split_name(qualified: &str) -> Option<(&str, &str)> {
+    let rest = qualified.strip_prefix("mcp__")?;
+    rest.split_once("__")
+}
+
 fn describe(cfg: &McpServerConfig) -> (&'static str, String) {
     match cfg {
         McpServerConfig::Stdio { command, args, .. } => {
@@ -585,7 +663,7 @@ impl McpManager {
         }
         McpManager {
             connections,
-            tools,
+            tools: normalize_tools(tools),
             errors,
         }
     }
@@ -872,6 +950,79 @@ mod tests {
         assert!(rows[0].enabled);
         let seen = seen.lock().map(|g| g.clone()).unwrap_or_default();
         assert!(seen.is_empty(), "no MCP tool, no connection: {seen:?}");
+    }
+
+    fn tool(name: &str, description: &str) -> McpTool {
+        McpTool {
+            name: name.to_string(),
+            description: description.to_string(),
+            input_schema: serde_json::json!({"type": "object"}),
+        }
+    }
+
+    #[test]
+    fn the_catalog_is_sorted_deduped_and_capped() {
+        let long = "x ".repeat(2_000);
+        let catalog = normalize_tools(vec![
+            tool("mcp__b__z", "second server"),
+            tool("mcp__a__y", &long),
+            tool("mcp__a__y", "duplicate name, later definition"),
+            tool("mcp__a__x", "first tool"),
+        ]);
+        let names: Vec<&str> = catalog.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(names, vec!["mcp__a__x", "mcp__a__y", "mcp__b__z"]);
+        assert_eq!(
+            catalog[1].description.chars().count(),
+            MAX_DESCRIPTION,
+            "a huge description is cut to the cap"
+        );
+        assert_eq!(
+            catalog[1].description,
+            normalize_tools(vec![tool("mcp__a__y", &long)])[0].description,
+            "normalization is idempotent, so the bytes are stable"
+        );
+    }
+
+    #[test]
+    fn search_requires_every_token_and_ranks_name_hits_first() {
+        let catalog = normalize_tools(vec![
+            tool(
+                "mcp__github__create_issue",
+                "Create an issue in a repository",
+            ),
+            tool(
+                "mcp__github__search_repositories",
+                "Search repositories by name",
+            ),
+            tool("mcp__fs__read", "Read a file from disk"),
+        ]);
+        let found: Vec<&str> = search(&catalog, "issue", 5)
+            .iter()
+            .map(|t| t.name.as_str())
+            .collect();
+        assert_eq!(found, vec!["mcp__github__create_issue"]);
+        assert_eq!(
+            search(&catalog, "github repo", 5)[0].name,
+            "mcp__github__search_repositories",
+            "a name hit outranks a description-only hit"
+        );
+        assert!(search(&catalog, "issue file", 5).is_empty());
+        assert_eq!(
+            search(&catalog, "", 2).len(),
+            2,
+            "an empty query lists the catalog in name order"
+        );
+    }
+
+    #[test]
+    fn a_qualified_name_splits_into_server_and_tool() {
+        assert_eq!(
+            split_name("mcp__github__create_issue"),
+            Some(("github", "create_issue"))
+        );
+        assert_eq!(split_name("mcp__my_server__t"), Some(("my_server", "t")));
+        assert_eq!(split_name("mcp__broken"), None);
+        assert_eq!(split_name("Read"), None);
     }
 
     #[tokio::test]

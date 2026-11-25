@@ -297,7 +297,7 @@ Agent 按 Claude Code 的结构实现：定义与提示词编译进二进制。�
 
 ### 工具、权限与计划模式
 
-- **工具**：`read_file` / `write_file` / `edit_file` / `list_files` / `glob` / `grep` / `bash`（含 `bash_output`、`bash_kill`）、`todo`、`task`、`skill`、`mcp`、`task_*`、`ask_user_question`、`send_message`、`EnterPlanMode` / `ExitPlanMode`
+- **工具**：`read_file` / `write_file` / `edit_file` / `list_files` / `glob` / `grep` / `bash`（含 `bash_output`、`bash_kill`）、`todo`、`task`、`skill`、`McpSearch` / `McpCall`（MCP 服务器只通过这两个工具访问）、`task_*`、`ask_user_question`、`send_message`、`EnterPlanMode` / `ExitPlanMode`
 - **子代理**：`general-purpose`（全工具）、`explore`（只读）、`plan`（只读计划）、`fork`（继承当前上下文），可并行、可后台，记录落在 `.bnote/projects/<项目键>/<会话>/subagents/`
 - **权限四档**（盾牌菜单）：变更前确认 / 自主模式 / 完全访问 / 计划模式；设置文件里的 `permissions.allow / ask / deny` 规则先于档位判定，支持 `Bash(git push:*)`、路径 glob 这类写法
 - **计划模式**：只读调研，写文件与有副作用的命令一律拒绝；`ExitPlanMode` 把计划写进 `.bnote/plans/<slug>.md` 并弹批准卡，批准后才恢复原档位
@@ -306,7 +306,7 @@ Agent 按 Claude Code 的结构实现：定义与提示词编译进二进制。�
 ### 设置分层、hooks 与输出风格
 
 - **逐层合并**：模式的 `settings.json`，再叠加（仅编码）`<代码项目>/.mcp.json`、`<代码项目>/.bnote/settings.json` 与 `settings.local.json`；数组拼接去重、对象深合并、标量后者覆盖。`.mcp.json` 只贡献 `mcpServers`，其他 agent 也会写的这个文件不能给 bnote 注入权限或 hooks。字段：`mcpServers`、`disabledMcpServers`、`skillDirs`、`disabledSkills`、`env`、`permissions`、`hooks`、`outputStyle`、`instructionsExcludes`、`cleanupPeriodDays`、`plansDirectory`、`autoMemoryEnabled`、`autoMemoryDirectory`
-- **MCP 分用户级与项目级**：用户级写在仓库里本模式的 `settings.json`，所有项目共用；编码模式再合并 `<代码项目>/.mcp.json`（跨 agent 共用，`type` 可省略：有 `command` 即 stdio，有 `url` 即 HTTP）、`<代码项目>/.bnote/settings.json`（随仓库提交）与 `settings.local.json`（仅本机），同名以后者为准。项目级服务器要批准后才启动：vault 里的 `trusted-mcp.json` 记的是配置摘要，改了配置就要重新批准，批准前连通检查也不会 spawn 它。设置页按作用域分组，每行显示一次真实连接检查的结果（连接、`tools/list`、断开）与工具数；开关写进 `disabledMcpServers`，停用但不删除配置
+- **MCP 分用户级与项目级**：用户级写在仓库里本模式的 `settings.json`，所有项目共用；编码模式再合并 `<代码项目>/.mcp.json`（跨 agent 共用，`type` 可省略：有 `command` 即 stdio，有 `url` 即 HTTP）、`<代码项目>/.bnote/settings.json`（随仓库提交）与 `settings.local.json`（仅本机），同名以后者为准。项目级服务器要批准后才启动：vault 里的 `trusted-mcp.json` 记的是配置摘要，改了配置就要重新批准，批准前连通检查也不会 spawn 它。设置页按作用域分组，每行显示一次真实连接检查的结果（连接、`tools/list`、断开）与工具数；开关写进 `disabledMcpServers`，停用但不删除配置。MCP 服务器的工具**不**写进请求：模型用 `McpSearch` 找到工具（结果里带 schema），再用 `McpCall` 调用，所以服务器重启或改描述都不会改写缓存前缀最前面的工具块。目录按限定名排序、去重，描述截断到 2 KB，未变化的服务器每次产生完全相同的字节
 - **hooks**：`PreToolUse`、`PostToolUse`、`PostToolUseFailure`、`UserPromptSubmit`、`SessionStart`、`Stop`、`SubagentStart`、`SubagentStop`、`PreCompact`、`PostCompact`。`sh -c` 执行，stdin 收 JSON，默认 60 秒超时；可返回 `permissionDecision`、`additionalContext`、`updatedInput`，非零退出可以拦住工具
 - **输出风格**：内置 default / Explanatory / Learning，自定义文件放 `<模式目录>/output-styles/*.md` 与（编码）`<代码项目>/.bnote/output-styles/*.md`（frontmatter：`name` / `description` / `keep-coding-instructions`）；`settings.outputStyle` 选中后注入动态段
 - **设置页随模式变化**：`设置 → Agent` 在编码模式是 `模型 | MCP | 技能 | AGENTS.md | 高级`，创作模式是 `模型 | MCP | 技能 | AGENTS.md`，学习模式只有 `模型 | AGENTS.md`。每个页面直接读写真实文件（配置目录与路径覆盖、settings.json 编辑器与解析状态、逐个 MCP 开关）；弹窗高度固定，内容多了滚动而不是改变窗口大小。MCP 页按用户级 / 项目级 / 项目本地分组，显示每个服务器的连通状态，项目级服务器在连接前给出批准按钮，并编辑所选作用域的文件

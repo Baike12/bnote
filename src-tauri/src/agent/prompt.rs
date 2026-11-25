@@ -137,7 +137,7 @@ pub fn segments(input: &AssembleInput) -> Vec<PromptSegment> {
         segs.push(PromptSegment::new(
             40,
             "mcp",
-            mcp_section(input.mcp_names),
+            mcp_section(!input.mcp_names.is_empty()),
             false,
         ));
     }
@@ -192,6 +192,11 @@ fn tool_rules(tools: &[String]) -> String {
     if has("TodoWrite") {
         r.push_str(
             "- Maintain multi-step work with TodoWrite: plan before starting (one item = one step), keep exactly one item in_progress, mark items completed as soon as they are done. Skip the list for single-step tasks. TodoRead shows the current list again (after a compaction, or before you claim the work is done).\n",
+        );
+    }
+    if has("mcp") {
+        r.push_str(
+            "- MCP servers expose their tools through McpSearch (find by keyword; the match carries the schema) and McpCall (run one by its qualified name and argument object). Do not guess a tool name.\n",
         );
     }
     if has("Agent") {
@@ -258,16 +263,15 @@ pub fn skills_section(skills: &[SkillInfo]) -> String {
     s
 }
 
-fn mcp_section(names: &[String]) -> String {
-    if names.is_empty() {
+/// The MCP block is deliberately constant per session: listing the catalog
+/// here would put a mutable list into the system prompt, and any server change
+/// would then invalidate the cached prefix.
+fn mcp_section(connected: bool) -> String {
+    if !connected {
         return "## MCP\n\n(未连接 MCP 服务器。)\n\n".into();
     }
-    let mut s = String::from("## MCP\n\n已连接工具:\n\n");
-    for name in names {
-        s.push_str(&format!("- {name}\n"));
-    }
-    s.push('\n');
-    s
+    "## MCP\n\nMCP 工具不预先列出。用 McpSearch 按关键词查找,再用 McpCall 以限定名 mcp__<server>__<tool> 和参数对象调用。\n\n"
+        .into()
 }
 
 fn environment(input: &AssembleInput) -> String {
@@ -429,7 +433,14 @@ mod tests {
         assert!(listing.contains("- html-blog: 把 markdown 排版成博客 HTML"));
 
         let p = assemble(&input(&creative, &["mcp__volcano__shell".to_string()]));
-        assert!(p.contains("- mcp__volcano__shell"));
+        assert!(
+            p.contains("McpSearch"),
+            "the model is pointed at the search tool"
+        );
+        assert!(
+            !p.contains("mcp__volcano__shell"),
+            "the catalog stays out of the system prompt: a server changing must not alter the cached prefix"
+        );
         assert!(p.contains("## Tools"));
     }
 

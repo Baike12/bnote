@@ -99,10 +99,17 @@ pub fn decide_with_rules(
     input: &Value,
 ) -> Decision {
     let tool = super::tools::canonical(tool);
-    if let Some(decision) = rule_decision(rules, tool, input) {
+    // A call made through McpCall names its real target in `name`: rules
+    // written for `mcp__server__tool` keep applying to it.
+    let rule_tool = if tool == "McpCall" {
+        input["name"].as_str().unwrap_or(tool)
+    } else {
+        tool
+    };
+    if let Some(decision) = rule_decision(rules, rule_tool, input) {
         return decision;
     }
-    let key = if tool.starts_with("mcp__") {
+    let key = if tool.starts_with("mcp__") || matches!(tool, "McpCall" | "McpSearch") {
         "mcp"
     } else {
         tool
@@ -475,6 +482,31 @@ mod tests {
         );
         assert_eq!(
             decide(Mode::Auto, &def, "Read", &no_input()),
+            Decision::Allow
+        );
+    }
+
+    #[test]
+    fn a_call_through_mcp_call_is_judged_as_its_real_target() {
+        let def = def_with(&[("mcp", Permission::Deny)]);
+        let call = serde_json::json!({"name": "mcp__github__create_issue", "arguments": {}});
+        assert_eq!(
+            decide(Mode::Auto, &def, "McpCall", &call),
+            Decision::Deny,
+            "the definition's `mcp` entry still gates it"
+        );
+        // A settings rule written for the qualified name still matches.
+        let rules = Rules {
+            deny: &["mcp__github__create_issue".to_string()],
+            ..Rules::default()
+        };
+        let open = def_with(&[("mcp", Permission::Allow)]);
+        assert_eq!(
+            decide_with_rules(Mode::Auto, &open, &rules, "McpCall", &call),
+            Decision::Deny
+        );
+        assert_eq!(
+            decide_with_rules(Mode::Auto, &open, &rules, "McpSearch", &no_input()),
             Decision::Allow
         );
     }

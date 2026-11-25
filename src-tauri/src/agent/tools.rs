@@ -310,6 +310,8 @@ pub fn canonical(name: &str) -> &str {
         "ask_user_question" => "AskUserQuestion",
         "read_url" => "WebFetch",
         "skill" => "Skill",
+        "mcp_search" => "McpSearch",
+        "mcp_call" => "McpCall",
         _ => name,
     }
 }
@@ -600,6 +602,33 @@ pub fn tool_schemas() -> &'static [(&'static str, &'static str, Value)] {
             "required": ["skill"]
         }),
     ),
+    // The MCP surface is two static tools, never one schema per server tool:
+    // a configured server changing would otherwise rewrite the request's tool
+    // block and invalidate the whole cached prefix.
+    (
+        "McpSearch",
+        "Find tools on the connected MCP servers by keyword. Returns each match's qualified name, description and input schema; an empty query lists the catalog. Run the tool with McpCall.",
+        json!({
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Keywords matched against tool names and descriptions"},
+                "limit": {"type": "integer", "description": "Maximum matches (default 5, max 20)"}
+            },
+            "required": ["query"]
+        }),
+    ),
+    (
+        "McpCall",
+        "Run one tool on a connected MCP server. `name` is the qualified name from McpSearch (mcp__<server>__<tool>); `arguments` is that tool's argument object.",
+        json!({
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Qualified tool name, mcp__<server>__<tool>"},
+                "arguments": {"type": "object", "description": "The tool's arguments"}
+            },
+            "required": ["name"]
+        }),
+    ),
 ])
 }
 
@@ -626,6 +655,7 @@ pub fn is_concurrency_safe(name: &str) -> bool {
             | "TaskList"
             | "TaskGet"
             | "TodoRead"
+            | "McpSearch"
             | "Agent"
     )
 }

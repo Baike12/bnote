@@ -360,6 +360,22 @@ fn openai_messages(system: &str, items: &[ChatItem]) -> Vec<Value> {
     messages
 }
 
+/// The positions in the Anthropic `tools` array that carry a cache breakpoint:
+/// the last tool always, plus the last built-in tool when MCP tools follow it.
+/// The second marker keeps the built-in schemas cached when a directly
+/// declared MCP tool changes; with MCP tools behind McpSearch the two
+/// positions coincide and only one marker is emitted.
+fn tool_cache_markers(tools: &[ToolDef]) -> Vec<usize> {
+    let Some(last) = tools.len().checked_sub(1) else {
+        return Vec::new();
+    };
+    let last_builtin = tools.iter().rposition(|tool| tool.mcp_server.is_none());
+    match last_builtin {
+        Some(index) if index != last => vec![index, last],
+        _ => vec![last],
+    }
+}
+
 /// Anthropic `message_start` usage: input_tokens excludes cache reads and writes,
 /// so the occupancy has to sum all three.
 fn anthropic_start_usage(message: &Value) -> Option<TokenUsage> {
@@ -764,8 +780,10 @@ impl Provider {
                 })
             })
             .collect();
-        if let Some(last) = tools_json.last_mut() {
-            last["cache_control"] = json!({"type": "ephemeral"});
+        for index in tool_cache_markers(tools) {
+            if let Some(tool) = tools_json.get_mut(index) {
+                tool["cache_control"] = json!({"type": "ephemeral"});
+            }
         }
 
         let mut body = json!({
@@ -1500,6 +1518,29 @@ fn find_double_newline(buf: &[u8]) -> Option<usize> {
 mod tests {
     use super::*;
     use crate::agent::types::InlineImage;
+
+    #[test]
+    fn a_direct_mcp_tool_keeps_the_builtin_prefix_cached() {
+        let tool = |name: &str, mcp: Option<&str>| ToolDef {
+            name: name.to_string(),
+            description: String::new(),
+            input_schema: serde_json::json!({}),
+            mcp_server: mcp.map(str::to_string),
+        };
+        let builtins = vec![tool("Read", None), tool("Bash", None)];
+        assert_eq!(
+            tool_cache_markers(&builtins),
+            vec![1],
+            "with no MCP tool the last tool is the only breakpoint"
+        );
+        let mixed = vec![tool("Read", None), tool("mcp__a__x", Some("a"))];
+        assert_eq!(
+            tool_cache_markers(&mixed),
+            vec![0, 1],
+            "a change to the MCP schema must not invalidate the built-in prefix"
+        );
+        assert!(tool_cache_markers(&[]).is_empty());
+    }
 
     /// Feeds a raw SSE byte stream into the anthropic event state, the same way
     /// `read_anthropic_stream` does, without an HTTP fixture; returns the UI
