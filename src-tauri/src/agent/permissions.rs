@@ -99,17 +99,11 @@ pub fn decide_with_rules(
     input: &Value,
 ) -> Decision {
     let tool = super::tools::canonical(tool);
-    // A call made through McpCall names its real target in `name`: rules
-    // written for `mcp__server__tool` keep applying to it.
-    let rule_tool = if tool == "McpCall" {
-        input["name"].as_str().unwrap_or(tool)
-    } else {
-        tool
-    };
-    if let Some(decision) = rule_decision(rules, rule_tool, input) {
+    if let Some(decision) = rule_decision(rules, tool, input) {
         return decision;
     }
-    let key = if tool.starts_with("mcp__") || matches!(tool, "McpCall" | "McpSearch") {
+    // Every tool of every MCP server shares the definition's `mcp` entry.
+    let key = if tool.starts_with("mcp__") {
         "mcp"
     } else {
         tool
@@ -487,26 +481,32 @@ mod tests {
     }
 
     #[test]
-    fn a_call_through_mcp_call_is_judged_as_its_real_target() {
-        let def = def_with(&[("mcp", Permission::Deny)]);
-        let call = serde_json::json!({"name": "mcp__github__create_issue", "arguments": {}});
-        assert_eq!(
-            decide(Mode::Auto, &def, "McpCall", &call),
-            Decision::Deny,
-            "the definition's `mcp` entry still gates it"
-        );
-        // A settings rule written for the qualified name still matches.
+    fn a_settings_rule_written_for_one_mcp_tool_matches_that_tool() {
+        // An MCP tool is called by its own name, so `deny` on the qualified
+        // name hits it and leaves the server's other tools alone.
         let rules = Rules {
             deny: &["mcp__github__create_issue".to_string()],
             ..Rules::default()
         };
-        let open = def_with(&[("mcp", Permission::Allow)]);
+        let def = def_with(&[("mcp", Permission::Allow)]);
         assert_eq!(
-            decide_with_rules(Mode::Auto, &open, &rules, "McpCall", &call),
+            decide_with_rules(
+                Mode::Auto,
+                &def,
+                &rules,
+                "mcp__github__create_issue",
+                &no_input()
+            ),
             Decision::Deny
         );
         assert_eq!(
-            decide_with_rules(Mode::Auto, &open, &rules, "McpSearch", &no_input()),
+            decide_with_rules(
+                Mode::Auto,
+                &def,
+                &rules,
+                "mcp__github__search_code",
+                &no_input()
+            ),
             Decision::Allow
         );
     }

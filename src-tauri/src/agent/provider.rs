@@ -362,9 +362,8 @@ fn openai_messages(system: &str, items: &[ChatItem]) -> Vec<Value> {
 
 /// The positions in the Anthropic `tools` array that carry a cache breakpoint:
 /// the last tool always, plus the last built-in tool when MCP tools follow it.
-/// The second marker keeps the built-in schemas cached when a directly
-/// declared MCP tool changes; with MCP tools behind McpSearch the two
-/// positions coincide and only one marker is emitted.
+/// MCP tools are declared after the built-ins, so the second marker keeps the
+/// built-in schemas cached when a server's catalog changes.
 fn tool_cache_markers(tools: &[ToolDef]) -> Vec<usize> {
     let Some(last) = tools.len().checked_sub(1) else {
         return Vec::new();

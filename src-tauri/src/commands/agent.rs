@@ -161,11 +161,7 @@ pub async fn agent_start_session(
             McpManager::connect_all(&mcp_servers, &layered.settings.disabled_mcp_servers).await,
         )
     } else {
-        Arc::new(McpManager {
-            connections: Default::default(),
-            tools: Vec::new(),
-            errors: Vec::new(),
-        })
+        Arc::new(McpManager::empty())
     };
     let skills = Arc::new(SkillRegistry::discover(
         agent_mode,
@@ -204,7 +200,7 @@ pub async fn agent_start_session(
         .and_then(|v| v.file_name().map(|s| s.to_string_lossy().to_string()))
         .unwrap_or_default();
     let current_note = state.current_note.lock().ok().and_then(|n| n.clone());
-    let mcp_names: Vec<String> = mcp.tools.iter().map(|t| t.name.clone()).collect();
+    let mcp_names: Vec<String> = mcp.tools().iter().map(|t| t.name.clone()).collect();
     // `additionalDirectories` widens the writable roots for this session.
     let extra_roots: Vec<PathBuf> = layered
         .settings
@@ -291,7 +287,7 @@ pub async fn agent_start_session(
     Ok(serde_json::json!({
         "sessionId": id,
         "skills": session.skills.skills,
-        "mcpTools": mcp.tools.iter().map(|t| t.name.clone()).collect::<Vec<_>>(),
+        "mcpTools": mcp.tools().iter().map(|t| t.name.clone()).collect::<Vec<_>>(),
         "mcpErrors": mcp.errors.clone(),
         "definition": {
             "id": def.id,

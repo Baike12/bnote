@@ -91,9 +91,9 @@ pub struct McpServerStatus {
     pub error: Option<String>,
 }
 
-/// Upper bound on one MCP tool description. Tool schemas no longer travel in
-/// the request prefix, but a search result must stay small enough to read: the
-/// same 2 KB cap CC and grok apply.
+/// Upper bound on one MCP tool description. A server's descriptions travel in
+/// the request's tool block, so one huge description would cost that budget on
+/// every turn; the cap is the same 2 KB CC applies.
 const MAX_DESCRIPTION: usize = 2048;
 
 /// Whitespace collapsed and cut at [`MAX_DESCRIPTION`] characters, suffix
@@ -113,7 +113,7 @@ fn capped_description(description: &str) -> String {
 /// Sorts the catalog by qualified name, drops duplicate names (the first keeps
 /// its definition), and caps every description. Two sessions against the same
 /// servers then hold byte-identical catalogs, whatever order `tools/list`
-/// answered in, and a search result is bounded.
+/// answered in, so an unchanged server produces an unchanged tool block.
 pub fn normalize_tools(mut tools: Vec<McpTool>) -> Vec<McpTool> {
     tools.sort_by(|left, right| left.name.cmp(&right.name));
     tools.dedup_by(|left, right| left.name == right.name);
@@ -121,45 +121,6 @@ pub fn normalize_tools(mut tools: Vec<McpTool>) -> Vec<McpTool> {
         tool.description = capped_description(&tool.description);
     }
     tools
-}
-
-/// The catalog rows matching `query`, best first. Every token must appear in
-/// the qualified name or the description (AND, so a two-word query does not
-/// match half the catalog); a hit in the name scores above a hit in the
-/// description, and ties break by name so the rendered result is stable.
-/// An empty query returns the first `limit` rows in name order.
-pub fn search<'a>(tools: &'a [McpTool], query: &str, limit: usize) -> Vec<&'a McpTool> {
-    let tokens: Vec<String> = query
-        .split_whitespace()
-        .map(|token| token.to_lowercase())
-        .collect();
-    if tokens.is_empty() {
-        return tools.iter().take(limit).collect();
-    }
-    let mut scored: Vec<(usize, &McpTool)> = tools
-        .iter()
-        .filter_map(|tool| {
-            let name = tool.name.to_lowercase();
-            let description = tool.description.to_lowercase();
-            if !tokens
-                .iter()
-                .all(|token| name.contains(token) || description.contains(token))
-            {
-                return None;
-            }
-            let score: usize = tokens
-                .iter()
-                .map(|token| if name.contains(token) { 3usize } else { 1usize })
-                .sum();
-            Some((score, tool))
-        })
-        .collect();
-    scored.sort_by(|left, right| right.0.cmp(&left.0).then(left.1.name.cmp(&right.1.name)));
-    scored
-        .into_iter()
-        .take(limit)
-        .map(|(_, tool)| tool)
-        .collect()
 }
 
 /// `mcp__<server>__<tool>` split into its two halves. The server name can
@@ -617,8 +578,37 @@ impl Drop for McpConnection {
 /// All MCP connections for the app, keyed by server name.
 pub struct McpManager {
     pub connections: HashMap<String, Arc<tokio::sync::Mutex<McpConnection>>>,
-    pub tools: Vec<McpTool>,
+    /// The definitions the connections were built from. A transport can die
+    /// under a running session (a streamable HTTP server sweeps idle sessions),
+    /// and the replacement is built from the same approved definition.
+    servers: std::collections::BTreeMap<String, McpServerConfig>,
+    /// The catalog is not fixed for the life of the session: a reconnect
+    /// replaces the reconnecting server's rows, so the next request declares
+    /// the tools the server actually has now.
+    tools: std::sync::RwLock<Vec<McpTool>>,
     pub errors: Vec<String>,
+}
+
+/// One catalog row for a server's tool, named the way the model calls it.
+fn mcp_tool(server: &str, tool: &str, description: &str, schema: Value) -> McpTool {
+    McpTool {
+        name: format!("mcp__{}__{}", server, tool),
+        description: if description.is_empty() {
+            format!("MCP tool {} from server {}", tool, server)
+        } else {
+            description.to_string()
+        },
+        input_schema: schema,
+    }
+}
+
+/// Whether an error is the transport having forgotten the session rather than
+/// the server refusing the call. rmcp (the Rust MCP SDK BrowserOS serves with)
+/// answers `404 Session not found` once an idle session was swept, and
+/// `422 Unexpected message, expect initialize request` when the id is missing.
+/// Both mean the same thing: this connection needs a new handshake.
+fn is_stale_session(error: &str) -> bool {
+    error.contains("Session not found") || error.contains("expect initialize request")
 }
 
 impl McpManager {
@@ -643,15 +633,7 @@ impl McpManager {
                     match c.list_tools().await {
                         Ok(list) => {
                             for (tool, desc, schema) in list {
-                                tools.push(McpTool {
-                                    name: format!("mcp__{}__{}", name, tool),
-                                    description: if desc.is_empty() {
-                                        format!("MCP tool {} from server {}", tool, name)
-                                    } else {
-                                        desc
-                                    },
-                                    input_schema: schema,
-                                });
+                                tools.push(mcp_tool(name, &tool, &desc, schema));
                             }
                         }
                         Err(e) => errors.push(format!("{}: {}", name, e)),
@@ -663,9 +645,36 @@ impl McpManager {
         }
         McpManager {
             connections,
-            tools: normalize_tools(tools),
+            servers: servers.clone(),
+            tools: std::sync::RwLock::new(normalize_tools(tools)),
             errors,
         }
+    }
+
+    /// The manager of a session whose tool set has no MCP entry: no connection,
+    /// no catalog, nothing to reconnect.
+    pub fn empty() -> McpManager {
+        McpManager {
+            connections: HashMap::new(),
+            servers: std::collections::BTreeMap::new(),
+            tools: std::sync::RwLock::new(Vec::new()),
+            errors: Vec::new(),
+        }
+    }
+
+    /// The catalog a request declares. A read guard, so a caller that only
+    /// needs the names does not copy the schemas.
+    pub fn tools(&self) -> std::sync::RwLockReadGuard<'_, Vec<McpTool>> {
+        self.tools.read().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// A manager holding a fixed catalog, for tests that only need the tool
+    /// definitions (no connection, no server).
+    #[cfg(test)]
+    pub fn with_tools(tools: Vec<McpTool>) -> McpManager {
+        let mut manager = McpManager::empty();
+        manager.tools = std::sync::RwLock::new(normalize_tools(tools));
+        manager
     }
 
     pub async fn call(
@@ -679,7 +688,42 @@ impl McpManager {
             .get(server)
             .ok_or_else(|| format!("unknown mcp server: {}", server))?;
         let mut c = conn.lock().await;
-        c.call_tool(tool, args).await
+        match c.call_tool(tool, args).await {
+            Err(error) if is_stale_session(&error) => {
+                // The session is server state with its own lifetime; the client
+                // owns it. Re-handshake, take the server's current catalog (its
+                // tools may have changed with the process), then retry the same
+                // call once. Without this the whole session stays broken after
+                // one idle sweep: every later call re-sends the dead id.
+                let Some(cfg) = self.servers.get(server) else {
+                    return Err(error);
+                };
+                let mut fresh = match McpConnection::connect(server, cfg).await {
+                    Ok(conn) => conn,
+                    Err(e) => return Err(format!("{}; 重连 {} 失败: {}", error, server, e)),
+                };
+                match fresh.list_tools().await {
+                    Ok(list) => self.replace_server_tools(server, list),
+                    Err(e) => return Err(format!("{}; 重连后取工具列表失败: {}", error, e)),
+                }
+                *c = fresh;
+                c.call_tool(tool, args).await
+            }
+            other => other,
+        }
+    }
+
+    /// Swap one server's rows for the catalog a fresh `tools/list` returned.
+    /// Rows keep the module's stability rule (sorted, deduplicated, capped) so
+    /// an unchanged server still produces identical bytes.
+    fn replace_server_tools(&self, server: &str, list: Vec<(String, String, Value)>) {
+        let prefix = format!("mcp__{}__", server);
+        let mut tools = self.tools.write().unwrap_or_else(|e| e.into_inner());
+        tools.retain(|tool| !tool.name.starts_with(&prefix));
+        for (tool, desc, schema) in list {
+            tools.push(mcp_tool(server, &tool, &desc, schema));
+        }
+        *tools = normalize_tools(std::mem::take(&mut *tools));
     }
 }
 
@@ -984,37 +1028,6 @@ mod tests {
     }
 
     #[test]
-    fn search_requires_every_token_and_ranks_name_hits_first() {
-        let catalog = normalize_tools(vec![
-            tool(
-                "mcp__github__create_issue",
-                "Create an issue in a repository",
-            ),
-            tool(
-                "mcp__github__search_repositories",
-                "Search repositories by name",
-            ),
-            tool("mcp__fs__read", "Read a file from disk"),
-        ]);
-        let found: Vec<&str> = search(&catalog, "issue", 5)
-            .iter()
-            .map(|t| t.name.as_str())
-            .collect();
-        assert_eq!(found, vec!["mcp__github__create_issue"]);
-        assert_eq!(
-            search(&catalog, "github repo", 5)[0].name,
-            "mcp__github__search_repositories",
-            "a name hit outranks a description-only hit"
-        );
-        assert!(search(&catalog, "issue file", 5).is_empty());
-        assert_eq!(
-            search(&catalog, "", 2).len(),
-            2,
-            "an empty query lists the catalog in name order"
-        );
-    }
-
-    #[test]
     fn a_qualified_name_splits_into_server_and_tool() {
         assert_eq!(
             split_name("mcp__github__create_issue"),
@@ -1085,6 +1098,121 @@ mod tests {
         assert!(
             seen.iter().skip(1).all(|(_, has)| *has),
             "every request after initialize must echo the session id: {seen:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_swept_session_is_rehandshaked_and_the_call_retried_once() {
+        // What BrowserOS neo does after `CLAW_SESSION_IDLE_MS` of silence: the
+        // session is swept and the next request with that id answers 404
+        // "Session not found". The manager must own the session lifecycle —
+        // otherwise one idle sweep breaks every later call in the session.
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let methods: Arc<std::sync::Mutex<Vec<String>>> =
+            Arc::new(std::sync::Mutex::new(Vec::new()));
+        let log = methods.clone();
+        tokio::spawn(async move {
+            let mut sessions = 0u32;
+            loop {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    break;
+                };
+                let Some((head, body)) = read_request(&mut stream).await else {
+                    continue;
+                };
+                let value: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
+                let method = value["method"].as_str().unwrap_or_default().to_string();
+                log.lock().map(|mut g| g.push(method.clone())).unwrap_or(());
+                let lower = head.to_ascii_lowercase();
+                let carries_first = lower.contains("mcp-session-id: session-1");
+                match method.as_str() {
+                    "initialize" => {
+                        sessions += 1;
+                        let head = format!("mcp-session-id: session-{}\r\n", sessions);
+                        respond(
+                            &mut stream,
+                            "200 OK",
+                            "text/event-stream",
+                            &head,
+                            "data: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{\"tools\":{}}}}\n\n",
+                        )
+                        .await;
+                    }
+                    "tools/call" if carries_first => {
+                        // Only the newest session is alive: the first one was
+                        // swept, exactly like an idle eviction. The handshake
+                        // and the first tools/list had already succeeded.
+                        respond(
+                            &mut stream,
+                            "404 Not Found",
+                            "text/plain",
+                            "",
+                            "Not Found: Session not found",
+                        )
+                        .await;
+                    }
+                    "notifications/initialized" => {
+                        respond(&mut stream, "202 Accepted", "text/plain", "", "").await
+                    }
+                    "tools/list" => {
+                        let id = value["id"].clone();
+                        // The second handshake meets a server that now has two
+                        // tools: the catalog must follow.
+                        let extra = if sessions > 1 {
+                            ",{\"name\":\"run\",\"description\":\"run\",\"inputSchema\":{\"type\":\"object\"}}"
+                        } else {
+                            ""
+                        };
+                        let body = format!("data: {{\"jsonrpc\":\"2.0\",\"id\":{id},\"result\":{{\"tools\":[{{\"name\":\"tabs\",\"description\":\"tabs\",\"inputSchema\":{{\"type\":\"object\"}}}}{extra}]}}}}\n\n");
+                        respond(&mut stream, "200 OK", "text/event-stream", "", &body).await;
+                    }
+                    "tools/call" => {
+                        let id = value["id"].clone();
+                        let body = format!("data: {{\"jsonrpc\":\"2.0\",\"id\":{id},\"result\":{{\"content\":[{{\"type\":\"text\",\"text\":\"ok\"}}]}}}}\n\n");
+                        respond(&mut stream, "200 OK", "text/event-stream", "", &body).await;
+                    }
+                    _ => respond(&mut stream, "200 OK", "text/event-stream", "", "").await,
+                }
+            }
+        });
+        let cfg = McpServerConfig::Http {
+            url: format!("http://{addr}/mcp"),
+            headers: std::collections::BTreeMap::new(),
+            timeouts_ms: Some(5_000),
+        };
+        let mut servers = std::collections::BTreeMap::new();
+        servers.insert("svc".to_string(), cfg);
+        let manager = McpManager::connect_all(&servers, &[]).await;
+        assert_eq!(manager.tools().len(), 1);
+
+        let (text, is_error) = manager
+            .call("svc", "tabs", &json!({"action": "list"}))
+            .await
+            .expect("the retried call succeeds");
+        assert_eq!(text, "ok");
+        assert!(!is_error);
+
+        let names: Vec<String> = manager.tools().iter().map(|t| t.name.clone()).collect();
+        assert_eq!(
+            names,
+            vec!["mcp__svc__run", "mcp__svc__tabs"],
+            "the catalog follows the reconnected server"
+        );
+        let methods = methods.lock().map(|g| g.clone()).unwrap_or_default();
+        assert_eq!(
+            methods,
+            vec![
+                "initialize",
+                "notifications/initialized",
+                "tools/list",
+                "tools/call",
+                "initialize",
+                "notifications/initialized",
+                "tools/list",
+                "tools/call",
+            ],
+            "one re-handshake, then exactly one retry"
         );
     }
 }

@@ -196,7 +196,7 @@ fn tool_rules(tools: &[String]) -> String {
     }
     if has("mcp") {
         r.push_str(
-            "- MCP servers expose their tools through McpSearch (find by keyword; the match carries the schema) and McpCall (run one by its qualified name and argument object). Do not guess a tool name.\n",
+            "- An MCP server's tools are declared with the built-in tools; call one by its full name `mcp__<server>__<tool>` with that tool's own arguments.\n",
         );
     }
     if has("Agent") {
@@ -263,14 +263,14 @@ pub fn skills_section(skills: &[SkillInfo]) -> String {
     s
 }
 
-/// The MCP block is deliberately constant per session: listing the catalog
-/// here would put a mutable list into the system prompt, and any server change
-/// would then invalidate the cached prefix.
+/// The MCP block is deliberately constant per session: the catalog itself is
+/// the request's tool block (where a server changing is a real change anyway),
+/// never a list rendered into the system prompt.
 fn mcp_section(connected: bool) -> String {
     if !connected {
         return "## MCP\n\n(未连接 MCP 服务器。)\n\n".into();
     }
-    "## MCP\n\nMCP 工具不预先列出。用 McpSearch 按关键词查找,再用 McpCall 以限定名 mcp__<server>__<tool> 和参数对象调用。\n\n"
+    "## MCP\n\nMCP 服务器的工具和内置工具一起声明在工具表里,名字是 mcp__<server>__<tool>,参数按各自的 schema。\n\n"
         .into()
 }
 
@@ -434,12 +434,12 @@ mod tests {
 
         let p = assemble(&input(&creative, &["mcp__volcano__shell".to_string()]));
         assert!(
-            p.contains("McpSearch"),
-            "the model is pointed at the search tool"
+            p.contains("mcp__<server>__<tool>"),
+            "the model is told how an MCP tool is named"
         );
         assert!(
             !p.contains("mcp__volcano__shell"),
-            "the catalog stays out of the system prompt: a server changing must not alter the cached prefix"
+            "the catalog stays out of the system prompt: it is the request's tool block"
         );
         assert!(p.contains("## Tools"));
     }
