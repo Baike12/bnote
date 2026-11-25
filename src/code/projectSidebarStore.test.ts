@@ -64,6 +64,8 @@ const item = (id: string, updatedAt: number): ProjectSessionItem => ({
   workdir: "/a",
   sourceName: "主仓库",
   isWorktree: false,
+  running: false,
+  origin: "local",
 });
 
 const group = (path: string, sessions: ProjectSessionItem[]): ProjectGroup => ({

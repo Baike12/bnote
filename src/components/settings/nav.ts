@@ -14,6 +14,7 @@ export type Tab =
   | "ime"
   | "quickadd"
   | "translate"
+  | "remote"
   | "agent-model"
   | "agent-mcp"
   | "agent-skills"
@@ -39,6 +40,7 @@ export const BASE_NAV_GROUPS: NavGroup[] = [
       { id: "editor", label: "编辑器" },
       { id: "reading", label: "阅读" },
       { id: "focus", label: "专注" },
+      { id: "remote", label: "远程访问" },
     ],
   },
   {

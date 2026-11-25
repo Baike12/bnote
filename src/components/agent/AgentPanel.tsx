@@ -7,6 +7,7 @@ import { listen } from "@tauri-apps/api/event";
 import {
   agentApi,
   homeApi,
+  remoteApi,
   type AgentChatItem,
   type AgentConfig,
   type AgentEvent,
@@ -28,9 +29,12 @@ import { codeSessionIdentity, codeSessionPath, type CodeSessionScope } from "@/c
 import {
   notifySessionsChanged,
   onNewSessionRequest,
+  onRemoteAttachRequest,
   onSessionRestore,
+  requestSessionRestore,
   takePendingCodeNewSession,
   takePendingCodeSession,
+  takePendingRemoteAttach,
 } from "@/code/sessionRequest";
 import { useProjectSidebarStore } from "@/code/projectSidebarStore";
 import { cleanGeneratedTitle, displayTitle } from "@/study/sessionTitle";
@@ -501,6 +505,7 @@ export function AgentPanel() {
       pathOf: (key) => transcriptRef.current.get(key),
       homeOf: (key) => transcriptHomeRef.current.get(key) === true,
       modelOf: (key) => modelByConvRef.current.get(key) ?? null,
+      originOf: (key) => convsRef.current.find((c) => c.key === key)?.origin,
       refreshSessions: () => void refreshSessions(),
     });
   }
@@ -759,6 +764,63 @@ export function AgentPanel() {
   );
 
   /**
+   * Attach to a session that is already live on the Mac (normally one a phone
+   * is driving). This deliberately does not call `agent_start_session`: the
+   * backend session exists and is the only executor, so the panel becomes a
+   * second view over it. The record's lines rebuild the UI; the backend keeps
+   * writing the transcript (`origin: "remote"` turns the local writer off).
+   */
+  const attachRemoteSession = useCallback(
+    async (transcriptId: string, token: number): Promise<boolean> => {
+      const code = codeScopeRef.current;
+      const homeDir = code?.homeDir;
+      if (!homeDir) return false;
+      try {
+        const result = await remoteApi.attachSession(transcriptId);
+        if (!result.live || !result.liveId) return false;
+        const liveId = result.liveId;
+        if (restoreTokenRef.current !== token) return true;
+        const path = codeSessionPath(homeDir, transcriptId);
+        if (!path) return false;
+        const raw = await transcriptIO(true)
+          .read(path)
+          .catch(() => null);
+        if (restoreTokenRef.current !== token) return true;
+        const lines = raw === null ? [] : (transcriptCache.get(path, raw)?.lines ?? []);
+        const conv: Conv = {
+          key: nextConvKey(),
+          sessionId: liveId,
+          entries: entriesFromLines(lines),
+          label: result.title?.trim() || "远程会话",
+          parent: null,
+          basedOn: "",
+          forkAt: 0,
+          titleSource: "first-message",
+          mcpErrors: [],
+          transcriptPath: path,
+          transcriptHome: true,
+          sessionFileId: transcriptId,
+          model: null,
+          usage: null,
+          todos: [],
+          origin: "remote",
+        };
+        setConvs([conv]);
+        turnsRef.current.clear();
+        lazyStartingRef.current.clear();
+        setActiveKey(conv.key);
+        transcriptRef.current.set(conv.key, path);
+        writer.markMetaWritten(conv.key, true);
+        return true;
+      } catch (e) {
+        showToast(String(e).replace(/^[A-Z_]+:\s*/, ""));
+        return false;
+      }
+    },
+    [showToast, writer],
+  );
+
+  /**
    * Switch to a session. In a family only the landing one was started during
    * the restore, the other sessions read the disk + start the backend session
    * the first time they are switched to (a session that is never switched to
@@ -784,6 +846,21 @@ export function AgentPanel() {
    * A session already in memory is switched to; one of another family is
    * rebuilt from disk — the same two choices the history drawer makes.
    */
+  /** The sidebar's click on a remote row while the project is already open. */
+  useEffect(() => {
+    if (mode !== "code") return;
+    return onRemoteAttachRequest((id) => {
+      const existing = convsRef.current.find((c) => c.sessionFileId === id);
+      if (existing && existing.origin === "remote") {
+        activateConv(existing.key);
+        return;
+      }
+      void attachRemoteSession(id, restoreTokenRef.current).then((ok) => {
+        if (!ok) requestSessionRestore(id);
+      });
+    });
+  }, [mode, activateConv, attachRemoteSession]);
+
   useEffect(() => {
     if (mode !== "code") return;
     return onSessionRestore((id) => {
@@ -918,6 +995,10 @@ export function AgentPanel() {
         // "restore the newest one": the click named the landing spot. "New
         // session in that project" is the same channel and outranks a restore.
         const startFresh = takePendingCodeNewSession(codeProject.path);
+        const remotePick = startFresh ? null : takePendingRemoteAttach(codeProject.path);
+        if (remotePick) {
+          if (await attachRemoteSession(remotePick, token)) return;
+        }
         const picked = startFresh ? null : takePendingCodeSession(codeProject.path);
         if (picked && sessions.some((s) => s.id === picked)) {
           await restoreFamily(picked, sessions, "anchor");
@@ -1017,6 +1098,7 @@ export function AgentPanel() {
     restartNonce,
     startSession,
     restoreFamily,
+    attachRemoteSession,
     investScope,
   ]);
 

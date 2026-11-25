@@ -44,6 +44,7 @@ function makeHarness() {
     pathOf: (convKey) => (convKey === "c1" ? "/fake/vault/sessions/s1.jsonl" : undefined),
     homeOf: () => false,
     modelOf: () => null,
+    originOf: () => "local",
     refreshSessions: () => {
       refreshed.count += 1;
     },

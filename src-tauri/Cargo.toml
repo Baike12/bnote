@@ -81,6 +81,19 @@ aes-gcm = "0.10"
 hkdf = "0.13"
 sha2 = "0.11"
 
+# 远程访问(remote/):出站 WSS + 应用层端到端加密。手机与 Mac 之间的每个
+# 业务帧都由 X25519 协商的密钥加密,relay 只见密文;TLS 证书固定复用 VPS 上
+# 的自签叶子证书。
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
+rustls = "0.23"
+rustls-pemfile = "2"
+chacha20poly1305 = "0.10"
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+ed25519-dalek = "2"
+hmac = "0.13"
+rand = "0.8"
+security-framework = "3"
+
 # 学习模式网页的笔形光标(commands/pen_cursor.rs):浏览器里 CSS 图片光标在
 # WKWebView 下每次鼠标移动都会被重建重设,只能由原生层给同一支 NSCursor。
 # 版本与 tauri 自身的依赖一致,不新增第二份 objc2。

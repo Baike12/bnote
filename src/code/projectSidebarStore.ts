@@ -10,7 +10,7 @@
  * token drops a stale snapshot that lands after a newer one.
  */
 import { create } from "zustand";
-import { homeApi, type SavedSessionMeta } from "@/lib/tauri";
+import { homeApi, remoteApi, type LiveSession, type SavedSessionMeta } from "@/lib/tauri";
 import { codeApi } from "./api";
 import {
   checkoutsOf,
@@ -24,6 +24,7 @@ import {
   type CheckoutSessions,
   type ProjectCheckout,
   type ProjectGroup,
+  type LiveSessionOverlay,
   type ProjectSessionItem,
   type RunningSession,
 } from "./projectGroups";
@@ -56,6 +57,12 @@ interface ProjectSidebarState {
    */
   running: RunningSession | null;
   /**
+   * The backend's live sessions, overlaid onto the rows: a phone session is
+   * running even though this panel is not streaming it, and clicking its row
+   * attaches to the Mac's session instead of restoring a new one.
+   */
+  liveSessions: LiveSessionOverlay[];
+  /**
    * Whether the create-worktree dialog is open. The dialog is mounted by the
    * code layout, not the sidebar, so a command can open it even while the
    * sidebar is collapsed (a one-shot request would be dropped by the unmounted
@@ -73,6 +80,8 @@ interface ProjectSidebarState {
    * predates that write.
    */
   refreshGroup: (workdir: string) => Promise<void>;
+  /** Re-read `agent_live_sessions` and re-apply the overlay (no disk read). */
+  refreshLive: () => Promise<void>;
   /** Open this folder (folding the previously open one), or fold it when it is the open one. */
   toggleGroup: (key: string) => void;
   /**
@@ -179,6 +188,7 @@ export const useProjectSidebarStore = create<ProjectSidebarState>((set, get) => 
   shown: {},
   activeSession: null,
   running: null,
+  liveSessions: [],
   worktreeOpen: false,
   worktreeRoot: null,
 
@@ -187,6 +197,9 @@ export const useProjectSidebarStore = create<ProjectSidebarState>((set, get) => 
     set({ loading: true });
     return serialized(async () => {
       try {
+        // The overlay is also what a fresh mount needs: sessions already
+        // running on the Mac (often driven by a phone) must show as running.
+        await get().refreshLive();
         const entries = await Promise.all(
           recent.map(async (root) => ({ root, mainRepo: await resolveMainRepo(root) })),
         );
@@ -200,6 +213,7 @@ export const useProjectSidebarStore = create<ProjectSidebarState>((set, get) => 
               await loadSessions(checkouts),
               0,
               running,
+              get().liveSessions,
             );
             return { ...head, checkouts, sessions };
           }),
@@ -227,11 +241,50 @@ export const useProjectSidebarStore = create<ProjectSidebarState>((set, get) => 
       // was removed); writing it back would resurrect it.
       const live = get().groups.find((g) => g.key === group.key);
       if (!live) return;
-      const sessions = mergeGroupSessions(live.checkouts, batches, 0, get().running);
+      const sessions = mergeGroupSessions(
+        live.checkouts,
+        batches,
+        0,
+        get().running,
+        get().liveSessions,
+      );
       set((state) => ({
         groups: state.groups.map((g) => (g.key === group.key ? { ...g, sessions } : g)),
       }));
     }),
+
+  refreshLive: async () => {
+    let sessions: LiveSession[];
+    try {
+      sessions = (await remoteApi.liveSessions()).sessions;
+    } catch {
+      // No remote backend (or no vault): keep the current overlay.
+      return;
+    }
+    const overlay: LiveSessionOverlay[] = sessions.map((session) => ({
+      transcriptId: session.transcriptId,
+      running: session.running,
+      origin: session.origin,
+    }));
+    set((state) => ({
+      liveSessions: overlay,
+      // Existing rows only: a status change never re-reads the disk.
+      groups: state.groups.map((group) => ({
+        ...group,
+        sessions: orderSessions(
+          group.sessions.map((item) => {
+            const live = overlay.find((entry) => entry.transcriptId === item.id);
+            return {
+              ...item,
+              running: live?.running ?? false,
+              origin: live?.origin ?? item.origin,
+            };
+          }),
+          state.running,
+        ),
+      })),
+    }));
+  },
 
   toggleGroup: (key) => {
     // A pinned project is always open (the pin is the user's shortcut into

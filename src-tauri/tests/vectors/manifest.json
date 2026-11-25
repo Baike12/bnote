@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "files": {
+    "aead.json": "bc88041f85aefc45636d52329959369807ae57e03d8442ed35e3bbf691476b76",
+    "e2e.json": "4a8b33540eba936373c7cc8b71c37f08d20d856ab26d64cd5c3eef79e7c943ca",
+    "fragment.json": "341410c66185770738c3c43fa08b3c455ee7d8971bbdac1283577ef3cdd929b1",
+    "replay.json": "f222da12386881576320f65f90622cb65e6e5902621b13123d9afff1762e56dd",
+    "tls-pin.json": "5477d2affa94246e6eccca022e207c743318f94dca1b33e48d8e841ebbaec6e7"
+  }
+}

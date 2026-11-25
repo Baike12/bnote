@@ -92,6 +92,14 @@ export interface ProjectSessionItem {
   sourceName: string;
   /** Whether the session ran in a linked worktree (drives the badge). */
   isWorktree: boolean;
+  /**
+   * Whether a backend session is live and mid-turn. Overlaid from
+   * `agent_live_sessions`: a remote phone session is live even when this panel
+   * is not the one streaming, so the row needs its own spinner.
+   */
+  running: boolean;
+  /** Who drives the session; a remote row opens through the attach channel. */
+  origin: "local" | "remote";
 }
 
 /** What clicking a project row does: fold the open project, or open another. */
@@ -283,6 +291,24 @@ export interface RunningSession {
 }
 
 /**
+ * The backend registry overlaid onto the session rows. `transcriptId` is the
+ * stable record id the sidebar lists; `liveId` is not enough because a restore
+ * creates a new live session for the same record.
+ */
+export interface LiveSessionOverlay {
+  transcriptId: string;
+  running: boolean;
+  origin: "local" | "remote";
+}
+
+function overlayFor(
+  live: readonly LiveSessionOverlay[],
+  transcriptId: string,
+): LiveSessionOverlay | undefined {
+  return live.find((entry) => entry.transcriptId === transcriptId);
+}
+
+/**
  * Order a group's rows: the streaming session first (ZCode's running-first
  * order — its `updatedAt` lags while it is being written), then newest first.
  * Stable for a list that is already newest-first, so a stop restores the time
@@ -293,7 +319,8 @@ export function orderSessions(
   running: RunningSession | null,
 ): ProjectSessionItem[] {
   const isRunning = (item: ProjectSessionItem) =>
-    running !== null && running.workdir === item.workdir && running.id === item.id;
+    item.running ||
+    (running !== null && running.workdir === item.workdir && running.id === item.id);
   return [...items].sort((a, b) => {
     const ra = isRunning(a);
     const rb = isRunning(b);
@@ -314,6 +341,7 @@ export function mergeGroupSessions(
   batches: readonly CheckoutSessions[],
   limit = GROUP_SESSION_LIMIT,
   running: RunningSession | null = null,
+  live: readonly LiveSessionOverlay[] = [],
 ): ProjectSessionItem[] {
   const byPath = new Map(checkouts.map((c) => [c.path, c]));
   const items: ProjectSessionItem[] = [];
@@ -328,6 +356,8 @@ export function mergeGroupSessions(
         workdir: checkout.path,
         sourceName: checkout.isMain ? "主仓库" : checkout.name,
         isWorktree: !checkout.isMain,
+        running: overlayFor(live, session.id)?.running ?? false,
+        origin: overlayFor(live, session.id)?.origin ?? session.origin ?? "local",
       });
     }
   }

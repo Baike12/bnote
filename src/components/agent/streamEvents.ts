@@ -174,6 +174,36 @@ export function createStreamHandler(
         ctx.onSubagentEnd?.(sessionId, event);
         break;
       }
+      case "turn_start": {
+        // The backend claimed the turn: clear the previous error and open the
+        // draft, so the first delta has somewhere to land.
+        ensureTurn(conv.key);
+        if (conv.error) ctx.updateConv(conv.key, (c) => ({ ...c, error: undefined }));
+        break;
+      }
+      case "user_message": {
+        // The sending view already appended its own message optimistically and
+        // its local IPC echo carries an empty clientId. Only the other view's
+        // message (the phone's, with a real id) is appended here.
+        if (event.clientId === "") break;
+        ctx.updateConv(conv.key, (c) => ({
+          ...c,
+          entries: [...c.entries, { role: "user", text: event.text, at: Date.now(), items: null }],
+        }));
+        break;
+      }
+      case "origin_changed": {
+        // The phone took the session over: from now on the backend recorder is
+        // the only writer of this record.
+        ctx.updateConv(conv.key, (c) => ({ ...c, origin: "remote" }));
+        break;
+      }
+      case "permission_resolved":
+      case "question_resolved": {
+        // The other view answered; the panel clears the card it is showing for
+        // this id (a stale card would otherwise ask a question that is gone).
+        break;
+      }
       case "thinking_delta": {
         const turn = ensureTurn(conv.key);
         // A delta after a finished tool batch opens the next provider round:

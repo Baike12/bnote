@@ -12,6 +12,7 @@ pub mod materials;
 pub mod pen_cursor;
 pub mod preview;
 pub mod python;
+pub mod remote;
 pub mod term;
 pub mod translate;
 pub mod vault;

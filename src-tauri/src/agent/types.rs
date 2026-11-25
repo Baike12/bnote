@@ -237,6 +237,25 @@ pub enum AgentEvent {
     /// The turn failed. `items` = the number of history entries written before
     /// the failure.
     Error { message: String, items: usize },
+    /// A send won the busy CAS and a turn is starting. `items` is the history
+    /// length after the user message was appended; the prompt itself arrives
+    /// as the following `user_message`.
+    TurnStart { items: usize },
+    /// A user message entered the session, from either view. Each view ignores
+    /// the echo of its own optimistic line by comparing `clientId` (empty for
+    /// sends made by the desktop's local IPC path).
+    UserMessage {
+        text: String,
+        #[serde(rename = "clientId")]
+        client_id: String,
+    },
+    /// A permission card was answered by either view: the other one retracts it.
+    PermissionResolved { id: String, allow: bool },
+    /// A question card was answered by either view.
+    QuestionResolved { id: String },
+    /// The session was taken over by the phone; from now on the backend
+    /// records the transcript and the desktop must stop writing it.
+    OriginChanged { origin: String },
 }
 
 /// Token usage of one model request.

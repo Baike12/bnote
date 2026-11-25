@@ -1,0 +1,73 @@
+{
+  "note": "Fresh window (max=0, bitmap=0). Apply in order; reject means the frame must be discarded.",
+  "steps": [
+    {
+      "seq": 1,
+      "accept": true
+    },
+    {
+      "seq": 3,
+      "accept": true
+    },
+    {
+      "seq": 2,
+      "accept": true
+    },
+    {
+      "seq": 2,
+      "accept": false
+    },
+    {
+      "seq": 1,
+      "accept": false
+    },
+    {
+      "seq": 0,
+      "accept": false
+    },
+    {
+      "seq": 66,
+      "accept": true
+    },
+    {
+      "seq": 2,
+      "accept": false
+    },
+    {
+      "seq": 3,
+      "accept": false
+    },
+    {
+      "seq": 3,
+      "accept": false
+    },
+    {
+      "seq": 67,
+      "accept": true
+    },
+    {
+      "seq": 130,
+      "accept": true
+    },
+    {
+      "seq": 67,
+      "accept": false
+    },
+    {
+      "seq": 68,
+      "accept": true
+    },
+    {
+      "seq": 129,
+      "accept": true
+    },
+    {
+      "seq": 130,
+      "accept": false
+    },
+    {
+      "seq": 131,
+      "accept": true
+    }
+  ]
+}

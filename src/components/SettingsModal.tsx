@@ -8,6 +8,7 @@ import { FocusTab } from "./settings/FocusTab";
 import { HotkeysTab, VimTab, SnippetsTab, ImeTab, QuickAddTab } from "./settings/InputTabs";
 import { DailyTab, TemplatesTab } from "./settings/NoteTabs";
 import { TranslateTab } from "./settings/StudyTabs";
+import { RemoteTab } from "./settings/RemoteTab";
 import {
   AgentAdvancedTab,
   AgentInstructionsTab,
@@ -102,6 +103,7 @@ export function SettingsModal() {
           {tab === "ime" && <ImeTab />}
           {tab === "quickadd" && <QuickAddTab />}
           {tab === "translate" && <TranslateTab />}
+          {tab === "remote" && <RemoteTab />}
           {tab === "agent-model" && <AgentModelTab mode={agentMode} />}
           {tab === "agent-mcp" && agentMode !== "study" && (
             <AgentMcpTab mode={agentMode} workdir={workdir} />

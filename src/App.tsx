@@ -63,6 +63,7 @@ import { QuickSwitcher } from "@/components/QuickSwitcher";
 import { LinkSuggest } from "@/components/study/LinkSuggest";
 import { CommandPalette } from "@/components/CommandPalette";
 import { installCodeEvents } from "@/code/events";
+import { installRemoteEvents } from "@/remote/events";
 import { QuickAddModal } from "@/components/daily/QuickAddModal";
 import { QuickTodoModal } from "@/components/daily/QuickTodoModal";
 import { SettingsModal } from "@/components/SettingsModal";
@@ -340,6 +341,11 @@ export default function App() {
       unlistenCodeEvents = off;
     });
 
+    let unlistenRemoteEvents: (() => void) | undefined;
+    void installRemoteEvents().then((off) => {
+      unlistenRemoteEvents = off;
+    });
+
     let unlistenMenuQuit: (() => void) | undefined;
     void listen("bnote:menu-quit", quitApp)
       .then((off) => {
@@ -353,6 +359,7 @@ export default function App() {
       unlisten?.();
       unlistenMenuQuit?.();
       unlistenCodeEvents?.();
+      unlistenRemoteEvents?.();
     };
   }, []);
 

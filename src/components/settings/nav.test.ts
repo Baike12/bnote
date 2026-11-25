@@ -80,6 +80,7 @@ describe("the navigation lists every section exactly once", () => {
         "ime",
         "quickadd",
         "reading",
+        "remote",
         "snippets",
         "templates",
         "translate",

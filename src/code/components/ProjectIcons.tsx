@@ -41,6 +41,16 @@ export function IconWorktree() {
   );
 }
 
+/** Remote session: a phone, so a row driven by the iPhone is recognizable. */
+export function IconPhone() {
+  return (
+    <svg {...base}>
+      <rect x="7" y="2.5" width="10" height="19" rx="2.2" />
+      <path d="M10.6 18.6h2.8" />
+    </svg>
+  );
+}
+
 /** Open project: a folder with an arrow going into it. */
 export function IconOpenProject() {
   return (

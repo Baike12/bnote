@@ -297,6 +297,12 @@ export interface Conv {
   transcriptPath: string | null;
   /** The session id in the file name (the history drawer highlights the current entry with it). */
   sessionFileId: string | null;
+  /**
+   * Who writes this record. Local sessions are written by the frontend; after
+   * the phone takes over (`origin_changed`) the backend recorder owns the file
+   * and every frontend write must stop.
+   */
+  origin?: "local" | "remote";
   /** The transcript lives in the agent home (`~/.bnote`) instead of the vault (coding sessions). */
   transcriptHome?: boolean;
   /** The model config snapshot of this session at the moment it started: later setting changes do not affect it, and the restore continues with it. */

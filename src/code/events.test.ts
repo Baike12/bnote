@@ -26,6 +26,7 @@ const mocks = vi.hoisted(() => ({
   toast: vi.fn(),
   setCodeProject: vi.fn(),
   refreshDiagnostics: vi.fn(),
+  refreshLive: vi.fn(),
 }));
 
 vi.mock("@tauri-apps/api/event", () => ({
@@ -46,6 +47,10 @@ vi.mock("./api", () => ({
 }));
 
 vi.mock("./editor/lsp", () => ({ refreshDiagnostics: mocks.refreshDiagnostics }));
+
+vi.mock("./projectSidebarStore", () => ({
+  useProjectSidebarStore: { getState: () => ({ refreshLive: mocks.refreshLive }) },
+}));
 
 vi.mock("@/state/appStore", () => ({
   useAppStore: {
@@ -101,16 +106,18 @@ beforeEach(async () => {
 });
 
 describe("installing the subscriptions", () => {
-  it("subscribes to the four event channels and unsubscribes on teardown", async () => {
+  it("subscribes to every event channel and unsubscribes on teardown", async () => {
     const off = await installCodeEvents();
     expect([...mocks.listeners.keys()].sort()).toEqual([
+      "agent-event",
       "code-lsp-diagnostics",
       "code-lsp-log",
       "code-lsp-status",
       "code-tree-changed",
+      "remote-event",
     ]);
     off();
-    expect(mocks.unlisten).toHaveBeenCalledTimes(4);
+    expect(mocks.unlisten).toHaveBeenCalledTimes(6);
   });
 });
 
@@ -309,7 +316,7 @@ describe("a subscription that cannot be installed", () => {
     vi.doMock("@tauri-apps/api/event", () => ({ listen: listenMock }));
     const { installCodeEvents: install } = await import("./events");
     const off = await install();
-    expect(listenMock).toHaveBeenCalledTimes(4);
+    expect(listenMock).toHaveBeenCalledTimes(6);
     expect(typeof off).toBe("function");
     expect(() => off()).not.toThrow();
     vi.doUnmock("@tauri-apps/api/event");

@@ -33,6 +33,7 @@ const BASE = "http://127.0.0.1:1439/__dev";
 const EVENTS = [
   "vault-changed",
   "agent-event",
+  "remote-event",
   "python-run-output",
   "python-run-exit",
   "python-lsp-diagnostics",

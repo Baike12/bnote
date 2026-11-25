@@ -313,7 +313,17 @@ export type AgentEvent =
   /** `ask_user_question` is waiting; answer with agentApi.questionReply. */
   | { type: "question"; id: string; questions: unknown }
   | { type: "turn_end"; reason: string; items: number }
-  | { type: "error"; message: string; items: number };
+  | { type: "error"; message: string; items: number }
+  /** A turn is starting (the send won the busy CAS); clears the previous error. */
+  | { type: "turn_start"; items: number }
+  /** A user message entered the session; the sending view ignores its own echo by `clientId`. */
+  | { type: "user_message"; text: string; clientId: string }
+  /** The other view answered a permission card: retract it. */
+  | { type: "permission_resolved"; id: string; allow: boolean }
+  /** The other view answered a question: retract it. */
+  | { type: "question_resolved"; id: string }
+  /** The phone took the session over; the desktop must stop writing its transcript. */
+  | { type: "origin_changed"; origin: "local" | "remote" };
 
 /** One task of the v2 task list (CC's TaskCreate shape). */
 export interface AgentTaskItem {
@@ -446,6 +456,8 @@ export interface SavedSessionMeta {
   createdAt: number;
   updatedAt: number;
   bytes: number;
+  /** `"remote"` when the backend recorded the session for a phone. */
+  origin?: "local" | "remote";
 }
 
 /** A model-side history entry; sent back to the backend when a session is restored (`agent_start_session.history`). */
@@ -731,6 +743,78 @@ export interface AgentHistoryEntry {
   sessionId: string;
   timestamp: number;
 }
+
+/** One paired phone (the Mac's device list). */
+export interface RemoteDevice {
+  deviceId: string;
+  name: string;
+  staticPublic: string;
+  createdAt: number;
+  lastSeenAt: number | null;
+  revoked: boolean;
+  revokedAt: number | null;
+}
+
+export interface RemoteStatus {
+  enabled: boolean;
+  status: "disabled" | "connecting" | "online" | "offline";
+  lastError: string | null;
+  relayUrl: string;
+  room: string;
+  deviceId: string;
+  devices: RemoteDevice[];
+  allowedProjects: string[];
+  pairingExpiresAt: number | null;
+}
+
+export interface RemoteAuditEntry {
+  at: number;
+  deviceId: string;
+  kind: "send" | "permission" | "abort" | "rollback" | "pair" | "revoke" | "system";
+  summary: string;
+}
+
+export interface LiveSession {
+  liveId: string;
+  transcriptId: string;
+  projectId: string | null;
+  running: boolean;
+  origin: "local" | "remote";
+}
+
+/** Remote access settings, pairing and the device list. */
+export const remoteApi = {
+  status: () => invoke<RemoteStatus>("remote_status"),
+  setEnabled: (enabled: boolean, relayUrl?: string) =>
+    invoke<RemoteStatus>("remote_set_enabled", { enabled, relayUrl: relayUrl ?? null }),
+  pairingBegin: () =>
+    invoke<{ payload: string; expiresAt: number; room: string }>("remote_pairing_begin"),
+  pairingCancel: () => invoke<void>("remote_pairing_cancel"),
+  pairApprove: (deviceId: string, allow: boolean) =>
+    invoke<void>("remote_pair_approve", { deviceId, allow }),
+  devices: () => invoke<{ devices: RemoteDevice[] }>("remote_devices"),
+  revokeDevice: (deviceId: string) => invoke<void>("remote_revoke_device", { deviceId }),
+  auditTail: (limit?: number) =>
+    invoke<{ entries: RemoteAuditEntry[]; nextCursor: string | null }>("remote_audit_tail", {
+      limit: limit ?? null,
+    }),
+  setAllowedProjects: (projects: string[]) =>
+    invoke<{ allowedProjects: string[] }>("remote_set_allowed_projects", { projects }),
+  todoConfig: (deviceId: string, server: string, key: string) =>
+    invoke<void>("remote_todo_config", { deviceId, server, key }),
+  liveSessions: () => invoke<{ sessions: LiveSession[] }>("agent_live_sessions"),
+  attachSession: (transcriptId: string) =>
+    invoke<{
+      live: boolean;
+      liveId?: string;
+      transcriptId?: string;
+      title?: string;
+      running?: boolean;
+      origin?: "local" | "remote";
+      history?: AgentChatItem[];
+      eventSeq?: number;
+    }>("agent_attach_session", { transcriptId }),
+};
 
 export const homeApi = {
   /** Resolve (and create) the record directory of a code project. */

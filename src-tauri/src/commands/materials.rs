@@ -598,6 +598,10 @@ pub struct SessionMeta {
     /// Number of prefix messages copied at fork time (the session's own
     /// messages count from that one on).
     pub fork_at: Option<u32>,
+    /// `"remote"` when the backend recorded this session for a phone; absent
+    /// for desktop sessions. The sidebar keeps the remote badge after the
+    /// session ends, when no live overlay exists.
+    pub origin: Option<String>,
     pub created_at: u64,
     pub updated_at: u64,
     pub bytes: u64,
@@ -668,6 +672,7 @@ struct MetaLine {
     parent: Option<String>,
     based_on: Option<String>,
     fork_at: Option<u32>,
+    origin: Option<String>,
 }
 
 fn meta_line(line: &str) -> Option<MetaLine> {
@@ -689,6 +694,7 @@ fn meta_line(line: &str) -> Option<MetaLine> {
             .get("forkAt")
             .and_then(|x| x.as_u64())
             .map(|n| n.min(u32::MAX as u64) as u32),
+        origin: text("origin"),
     })
 }
 
@@ -801,6 +807,7 @@ pub(crate) fn summarize_session(path: &Path) -> Option<SessionMeta> {
         parent: meta.parent,
         based_on: meta.based_on,
         fork_at: meta.fork_at,
+        origin: meta.origin,
         created_at: first_at,
         updated_at: updated.max(last_at),
         bytes,

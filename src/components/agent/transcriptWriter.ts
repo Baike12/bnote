@@ -26,6 +26,8 @@ export interface TranscriptWriterDeps {
   homeOf(convKey: string): boolean;
   /** The model config snapshot of the session (written into the metadata line). */
   modelOf(convKey: string): SessionModelConfig | null;
+  /** Remote sessions are recorded by the Rust backend; the frontend must not write them. */
+  originOf(convKey: string): "local" | "remote" | undefined;
   /** The saved-session list changed (the history drawer reads it). */
   refreshSessions(): void;
 }
@@ -84,6 +86,7 @@ export function createTranscriptWriter(deps: TranscriptWriterDeps): TranscriptWr
   }
 
   function persistUserLine(convKey: string, user: TranscriptUserLine): void {
+    if (deps.originOf(convKey) === "remote") return;
     const path = deps.pathOf(convKey);
     if (!path) return;
     const firstWrite = !metaWritten.get(convKey);
@@ -93,6 +96,7 @@ export function createTranscriptWriter(deps: TranscriptWriterDeps): TranscriptWr
   }
 
   function persistTurn(convKey: string, turn: Turn, pathOverride?: string, force = true): void {
+    if (deps.originOf(convKey) === "remote") return;
     const path = pathOverride ?? deps.pathOf(convKey);
     if (!path) return;
     if (!force) {
@@ -138,6 +142,7 @@ export function createTranscriptWriter(deps: TranscriptWriterDeps): TranscriptWr
   }
 
   function persistModelLine(convKey: string, model: SessionModelConfig): void {
+    if (deps.originOf(convKey) === "remote") return;
     const path = deps.pathOf(convKey);
     if (!path) return;
     // The metadata line must stay first. A switch before the first message would

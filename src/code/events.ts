@@ -1,5 +1,6 @@
 import { listen } from "@tauri-apps/api/event";
 import { useCodeStore } from "./store";
+import { useProjectSidebarStore } from "./projectSidebarStore";
 import { activeCodeEditor } from "./editor/registry";
 import { refreshDiagnostics } from "./editor/lsp";
 import type { CodeEntry, LspDiagnostic } from "./types";
@@ -160,6 +161,28 @@ export async function installCodeEvents(): Promise<() => void> {
     useCodeStore
       .getState()
       .setLspState(data.language, typeof data.state === "string" ? data.state : "unknown");
+  });
+
+  // A turn boundary (local or phone-driven) is when the backend registry's
+  // running flag flips; re-reading it keeps the sidebar's per-row spinner and
+  // the remote badge honest without polling.
+  let liveTimer: number | null = null;
+  const scheduleLiveRefresh = () => {
+    if (liveTimer !== null) return;
+    liveTimer = window.setTimeout(() => {
+      liveTimer = null;
+      void useProjectSidebarStore.getState().refreshLive();
+    }, 300);
+  };
+  await add("agent-event", (payload) => {
+    const type = (payload as { type?: unknown } | null)?.type;
+    if (type === "turn_start" || type === "turn_end" || type === "origin_changed") {
+      scheduleLiveRefresh();
+    }
+  });
+  await add("remote-event", (payload) => {
+    const data = payload as { type?: unknown; status?: unknown } | null;
+    if (data?.type === "status" && data.status === "online") scheduleLiveRefresh();
   });
 
   await add("code-lsp-log", (payload) => {

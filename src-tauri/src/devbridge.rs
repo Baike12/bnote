@@ -40,8 +40,8 @@ use tauri::{AppHandle, Listener, Manager};
 
 use crate::agent::tools::StudyContent;
 use crate::commands::{
-    agent, code, config, files, focus, home, invest, materials, preview, python, term, translate,
-    vault,
+    agent, code, config, files, focus, home, invest, materials, preview, python, remote, term,
+    translate, vault,
 };
 use crate::state::AppState;
 
@@ -80,6 +80,7 @@ fn subscribe_events(app: &AppHandle) {
     for name in [
         "vault-changed",
         "agent-event",
+        "remote-event",
         "python-run-output",
         "python-run-exit",
         "python-lsp-diagnostics",
@@ -390,8 +391,8 @@ async fn dispatch(app: &AppHandle, cmd: &str, args: &Value) -> Result<Value, Str
                 selection,
                 mode,
                 workdir,
-                task_list_id,
-                invest_scope
+                invest_scope,
+                task_list_id
             )
             .await)
         }
@@ -585,6 +586,55 @@ async fn dispatch(app: &AppHandle, cmd: &str, args: &Value) -> Result<Value, Str
         "agent_get_history" => {
             json_ok!(agent::agent_get_history(app.state(), arg_str(args, "sessionId")?))
         }
+        "agent_live_sessions" => json_ok!(remote::agent_live_sessions(app.state())),
+        "agent_attach_session" => json_ok!(remote::agent_attach_session(
+            app.state(),
+            arg_str(args, "transcriptId")?
+        )),
+        "remote_status" => json_ok!(remote::remote_status(app.state(), app.state())),
+        "remote_set_enabled" => {
+            let relay = optional_str(args, "relayUrl");
+            json_ok!(remote::remote_set_enabled(
+                app.clone(),
+                app.state(),
+                app.state(),
+                arg_bool(args, "enabled")?,
+                relay
+            )
+            .await)
+        }
+        "remote_pairing_begin" => json_ok!(remote::remote_pairing_begin(
+            app.clone(),
+            app.state()
+        )),
+        "remote_pairing_cancel" => json_ok!(remote::remote_pairing_cancel(app.state())),
+        "remote_pair_approve" => json_ok!(remote::remote_pair_approve(
+            app.state(),
+            arg_str(args, "deviceId")?,
+            arg_bool(args, "allow")?
+        )),
+        "remote_devices" => json_ok!(remote::remote_devices(app.state())),
+        "remote_revoke_device" => json_ok!(remote::remote_revoke_device(
+            app.state(),
+            app.state(),
+            arg_str(args, "deviceId")?
+        )),
+        "remote_audit_tail" => json_ok!(remote::remote_audit_tail(
+            app.state(),
+            arg_opt_u64(args, "limit").map(|n| n as usize)
+        )),
+        "remote_set_allowed_projects" => json_ok!(remote::remote_set_allowed_projects(
+            app.state(),
+            serde_json::from_value(arg_value(args, "projects")?)
+                .map_err(|e| format!("BAD_ARGS: projects: {}", e))?
+        )),
+        "remote_todo_config" => json_ok!(remote::remote_todo_config(
+            app.state(),
+            app.state(),
+            arg_str(args, "deviceId")?,
+            arg_str(args, "server")?,
+            arg_str(args, "key")?
+        )),
         "agent_set_current_note" => json_ok!(agent::agent_set_current_note(
             app.state(),
             arg_opt_str(args, "path")

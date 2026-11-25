@@ -112,3 +112,38 @@ export function onSessionsChanged(listener: SessionsChangedListener): () => void
     sessionsChangedListeners.delete(listener);
   };
 }
+
+/**
+ * Remote sessions attach to the Mac's live session instead of restoring a new
+ * local one. Two channels, the same split as restore: a one-shot request for
+ * the project that is already open, and a pending pick keyed by workdir for a
+ * row in another project that `openProjectAt` lands on afterwards.
+ */
+let pendingRemote: { workdir: string; id: string } | null = null;
+
+export function setPendingRemoteAttach(workdir: string, transcriptId: string): void {
+  pendingRemote = { workdir, id: transcriptId };
+}
+
+/** Consume the pending attach for `workdir` (a pick for another checkout is dropped). */
+export function takePendingRemoteAttach(workdir: string): string | null {
+  const entry = pendingRemote;
+  pendingRemote = null;
+  return entry && entry.workdir === workdir ? entry.id : null;
+}
+
+type RemoteAttachListener = (transcriptId: string) => void;
+
+const remoteAttachListeners = new Set<RemoteAttachListener>();
+
+/** Ask the mounted panel to attach to a live remote session. */
+export function requestRemoteAttach(transcriptId: string): void {
+  for (const listener of [...remoteAttachListeners]) listener(transcriptId);
+}
+
+export function onRemoteAttachRequest(listener: RemoteAttachListener): () => void {
+  remoteAttachListeners.add(listener);
+  return () => {
+    remoteAttachListeners.delete(listener);
+  };
+}

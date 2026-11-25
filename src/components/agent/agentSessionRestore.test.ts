@@ -36,8 +36,15 @@ describe("restart restore: the session family, not the most recent one", () => {
   it("there is no longer an openSavedSession path that mounts a single session", () => {
     expect(code).not.toMatch(/openSavedSession/);
     const fn = code.slice(code.indexOf("const restoreFamily = useCallback"));
-    const body = fn.slice(0, fn.indexOf("const activateConv"));
-    // A family restore must replace the whole table; a single setConvs([conv]) is only allowed in "create a new main session".
+    // Stop at whichever comes first: the restore body ends at the next hook.
+    const end = Math.min(
+      ...["const attachRemoteSession", "const activateConv"].map((marker) => {
+        const at = fn.indexOf(marker);
+        return at < 0 ? Number.POSITIVE_INFINITY : at;
+      }),
+    );
+    const body = fn.slice(0, end);
+    // A family restore must replace the whole table; a single setConvs([conv]) is only allowed in "create a new main session" and in the remote attach (a live session has no family).
     expect(body).toMatch(/setConvs\(convs\)/);
     expect(body).not.toMatch(/setConvs\(\[conv\]\)/);
   });

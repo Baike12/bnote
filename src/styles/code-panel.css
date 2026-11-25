@@ -202,6 +202,20 @@
   height: 12px;
 }
 
+/* A session started from the iPhone; it stays attached to the Mac's live
+   session, so the row's click goes through the remote-attach channel. */
+.cp-remote {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  color: var(--accent);
+}
+
+.cp-remote svg {
+  width: 12px;
+  height: 12px;
+}
+
 /* A row's hover-only action (new session, archive a session, remove a project). */
 .cp-row-action {
   display: none;

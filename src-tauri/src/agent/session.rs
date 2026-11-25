@@ -25,6 +25,8 @@ use super::tasks::TaskList;
 use super::todo::{self, TodoItem};
 use super::tools::{ToolContext, ToolOutput};
 use super::types::{AgentEvent, ChatItem, Content, InlineImage, ToolDef, UsageTotals};
+use crate::remote::events::SessionEventBus;
+use crate::remote::Origin;
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -236,6 +238,14 @@ pub struct Session {
     pub selection: Mutex<super::models::ModelSelection>,
     pub running: Arc<AtomicBool>,
     pub seq: Arc<AtomicU64>,
+    /// Remote-clients' event stream. A child session shares its root's bus, so
+    /// one conversation is one ordered sequence; `event.session_id` still names
+    /// the child that produced each event.
+    pub events: Arc<SessionEventBus>,
+    /// Who writes this conversation's transcript. Local sessions are written by
+    /// the desktop frontend; a phone send flips it to `Remote` and the backend
+    /// recorder becomes the only writer (never both).
+    origin: Mutex<Origin>,
     /// `None` in headless tests: there is no window to emit to, and the loop
     /// must run without one (the same convention as `ToolContext.app`).
     pub app: Option<tauri::AppHandle>,
@@ -480,6 +490,13 @@ impl Session {
     /// (turn_end / error)**. The front end relies on it to clear the "generating"
     /// state; miss it once and the panel stays busy forever.
     pub async fn send(&self, text: &str, images: Vec<InlineImage>) {
+        self.send_with_client(text, images, "").await;
+    }
+
+    /// `send` plus the caller's message id: a remote view ignores the echo of
+    /// its own optimistic line by matching `clientId`. Local IPC sends pass an
+    /// empty id.
+    pub async fn send_with_client(&self, text: &str, images: Vec<InlineImage>, client_id: &str) {
         let _guard = RunningGuard(self.running.clone());
         // A new turn starts un-aborted. The flag is sticky inside a turn (a stop
         // that lands during the final stream must not be cleared by the loop),
@@ -537,6 +554,11 @@ impl Session {
                 )));
             }
         }
+        self.emit(AgentEvent::UserMessage {
+            text: text.to_string(),
+            client_id: client_id.to_string(),
+        });
+        crate::remote::recorder::record_user(self, text);
         self.append_history(text);
         self.finish_turn(self.run_loop(&ParentDispatch(self)).await)
             .await;
@@ -712,6 +734,13 @@ impl Session {
     /// Emits the turn's terminal event (the one contract every entry point
     /// must keep).
     async fn finish_turn(&self, result: Result<TurnOutcome, String>) {
+        match &result {
+            Ok(outcome) if outcome.reason == "aborted" => {
+                crate::remote::recorder::record_error(self, "已中止");
+            }
+            Err(e) => crate::remote::recorder::record_error(self, e),
+            _ => {}
+        }
         let count = self.history().len();
         let event = match result {
             Ok(outcome) => AgentEvent::TurnEnd {
@@ -729,6 +758,9 @@ impl Session {
     /// Pushes an event to the front end (the command layer also needs this for
     /// its panic fallback).
     pub fn emit(&self, event: AgentEvent) {
+        // The remote bus comes first: the phone has no Tauri event loop, and a
+        // headless test session (`app: None`) still has to be observable.
+        self.events.publish(&self.id, event.clone());
         let Some(app) = &self.app else {
             return;
         };
@@ -737,6 +769,61 @@ impl Session {
             "event": event,
         });
         let _ = app.emit("agent-event", payload);
+    }
+
+    pub fn origin(&self) -> Origin {
+        self.origin.lock().map(|g| *g).unwrap_or(Origin::Local)
+    }
+
+    /// Marks the session as remotely driven and tells the desktop to stop
+    /// writing the transcript. Returns false when it was already remote.
+    pub fn take_remote_origin(&self) -> bool {
+        {
+            let mut guard = self.origin.lock().unwrap_or_else(|e| e.into_inner());
+            if *guard == Origin::Remote {
+                return false;
+            }
+            *guard = Origin::Remote;
+        }
+        self.emit(AgentEvent::OriginChanged {
+            origin: "remote".into(),
+        });
+        true
+    }
+
+    pub fn is_subagent(&self) -> bool {
+        self.parent_id.is_some()
+    }
+
+    /// The stable record id (the transcript file name); not the live id.
+    pub fn transcript_id(&self) -> &str {
+        &self.log_key
+    }
+
+    /// `<agent home>/projects/<project>/<transcript id>.jsonl`.
+    pub fn transcript_path(&self) -> Option<std::path::PathBuf> {
+        let project = self
+            .ctx
+            .workdir
+            .clone()
+            .or_else(|| self.ctx.vault.clone())?;
+        Some(super::home::session_transcript(&project, &self.log_key))
+    }
+
+    /// The model snapshot written into a transcript's metadata line. Carries no
+    /// credential (the provider's API key stays out by construction).
+    pub fn model_snapshot(&self) -> super::models::SessionModelConfig {
+        let provider = self.provider();
+        super::models::SessionModelConfig {
+            provider: provider.kind.clone(),
+            model: provider.model.clone(),
+            base_url: provider.base_url.clone(),
+            max_tokens: provider.max_tokens,
+            context_window: self.context_window.load(Ordering::SeqCst),
+            thinking: provider.thinking_level.clone(),
+            provider_id: provider.provider_id.clone(),
+            model_id: provider.model_id.clone(),
+        }
     }
 
     /// Splits the context into its parts for the composer's context card: the
@@ -1144,6 +1231,7 @@ impl Session {
         if let Ok(mut slot) = self.selection.lock() {
             *slot = selection;
         }
+        crate::remote::recorder::record_model(self);
     }
 
     /// The auto-memory block for a coding session: the behavior prompt plus
@@ -1397,7 +1485,7 @@ impl Session {
             if let Ok(mut items) = self.items.lock() {
                 items.push(ChatItem::Message {
                     role: "assistant".into(),
-                    content,
+                    content: content.clone(),
                 });
             }
             // Output-token recovery: raise the ceiling once, then ask the model
@@ -1424,6 +1512,7 @@ impl Session {
                 return Ok(TurnOutcome::new("max_tokens"));
             }
             if turn.tool_calls.is_empty() {
+                crate::remote::recorder::record_round(self, &content, &[]);
                 // Anthropic long-turn semantics: `pause_turn` pauses a turn that
                 // grew too long server-side; the partial assistant message is
                 // already in the history and the documented resume is simply
@@ -1497,6 +1586,7 @@ impl Session {
                 })
                 .collect();
             let results = self.execute_calls(dispatch, &mut calls).await;
+            crate::remote::recorder::record_round(self, &content, &results);
             if !results.is_empty() {
                 if let Ok(mut items) = self.items.lock() {
                     items.push(ChatItem::Message {
@@ -2405,6 +2495,8 @@ impl Session {
             selection: Mutex::new(child_selection),
             running: Arc::new(AtomicBool::new(false)),
             seq: self.seq.clone(),
+            events: self.events.clone(),
+            origin: Mutex::new(self.origin()),
             app: self.app.clone(),
             context_window: AtomicU64::new(child_window),
             last_usage: Mutex::new(None),
@@ -3132,7 +3224,7 @@ pub fn create_session(seed: SessionSeed) -> Session {
     };
     let log_key = task_list_id.clone();
     Session {
-        id: seed.id,
+        id: seed.id.clone(),
         mode: seed.mode,
         mode_root,
         def: seed.def.clone(),
@@ -3153,6 +3245,8 @@ pub fn create_session(seed: SessionSeed) -> Session {
         selection: Mutex::new(seed.selection),
         running: Arc::new(AtomicBool::new(false)),
         seq: Arc::new(AtomicU64::new(0)),
+        events: Arc::new(SessionEventBus::new(seed.id.clone())),
+        origin: Mutex::new(Origin::Local),
         app: seed.app,
         context_window: AtomicU64::new(seed.context_window),
         last_usage: Mutex::new(None),

@@ -49,6 +49,7 @@ function makeWriter() {
       maxTokens: 8192,
       contextWindow: 128_000,
     }),
+    originOf: () => "local",
     refreshSessions: () => {
       sink.refresh += 1;
     },
@@ -211,6 +212,7 @@ describe("transcript writer: where the record lives", () => {
       pathOf: () => undefined,
       homeOf: () => false,
       modelOf: () => null,
+      originOf: () => "local",
       refreshSessions: () => {
         sink.refresh += 1;
       },
@@ -236,6 +238,7 @@ describe("transcript writer: where the record lives", () => {
       pathOf: () => "/h/s1.jsonl",
       homeOf: () => true,
       modelOf: () => null,
+      originOf: () => "local",
       refreshSessions: () => {},
     });
     writer.persistUserLine("c1", { type: "user", at: 1, text: "问" });
@@ -402,6 +405,7 @@ describe("transcript writer: the rewind marker", () => {
       pathOf: () => undefined,
       homeOf: () => false,
       modelOf: () => null,
+      originOf: () => "local",
       refreshSessions: () => {},
     });
     writer.persistRewind("c1", 3);

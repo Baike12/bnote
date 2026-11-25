@@ -15,6 +15,7 @@ import {
   IconNewSession,
   IconOpenProject,
   IconPanelLeft,
+  IconPhone,
   IconPin,
   IconRefresh,
   IconSearch,
@@ -27,11 +28,14 @@ import { openProjectAt, openProjectDialog } from "../commands";
 import {
   onSessionsChanged,
   requestNewSession,
+  requestRemoteAttach,
   requestSessionRestore,
   setPendingCodeNewSession,
   setPendingCodeSession,
+  setPendingRemoteAttach,
   takePendingCodeNewSession,
   takePendingCodeSession,
+  takePendingRemoteAttach,
 } from "../sessionRequest";
 import { useCodeStore } from "../store";
 import { visibleSessions, useProjectSidebarStore } from "../projectSidebarStore";
@@ -295,6 +299,21 @@ export function ProjectsSidebar() {
   }, [focusKey, revealTick]);
 
   async function openSession(item: ProjectSessionItem) {
+    // A phone-driven session is already live on the Mac: attach to it rather
+    // than restoring the record into a second (and workdir-blocked) session.
+    if (item.origin === "remote") {
+      if (item.workdir === currentRoot) {
+        requestRemoteAttach(item.id);
+        return;
+      }
+      setPendingRemoteAttach(item.workdir, item.id);
+      const ok = await openProjectAt(item.workdir);
+      if (!ok) {
+        takePendingRemoteAttach(item.workdir);
+        showToast("会话所在的项目未能打开");
+      }
+      return;
+    }
     if (item.workdir === currentRoot) {
       requestSessionRestore(item.id);
       return;
@@ -485,7 +504,8 @@ export function ProjectsSidebar() {
     const rowKey = sessionRowKey(item.workdir, item.id);
     const active = activeSession?.id === item.id && activeSession.workdir === item.workdir;
     const isRunning =
-      running !== null && running.workdir === item.workdir && running.id === item.id;
+      item.running ||
+      (running !== null && running.workdir === item.workdir && running.id === item.id);
     const armed = confirmKey === `archive:${key}`;
     // The panel may still be appending to a streaming or open transcript;
     // moving that file would split the record (ZCode disables archive while
@@ -513,6 +533,11 @@ export function ProjectsSidebar() {
         {item.isWorktree && (
           <span className="cp-worktree" title={`Worktree ${item.sourceName}`}>
             <IconWorktree />
+          </span>
+        )}
+        {item.origin === "remote" && (
+          <span className="cp-remote" title="手机发起的会话">
+            <IconPhone />
           </span>
         )}
         <span className="cp-time">{relativeTime(item.updatedAt)}</span>

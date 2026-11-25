@@ -13,6 +13,7 @@ pub mod ime_tis;
 pub mod invest;
 pub mod lsp;
 mod paths;
+pub mod remote;
 mod state;
 pub mod translate;
 
@@ -242,6 +243,22 @@ pub fn run() {
                 invest_db: std::sync::Arc::new(std::sync::Mutex::new(None)),
             });
 
+            // The remote channel is process-scoped, like the daily-sync SSE
+            // connection: one relay socket, created when the user enables it.
+            app.manage(remote::manager::RemoteManager::default());
+            // `enabled` is part of the persisted remote settings, so a launch
+            // restores the connection without asking the user to toggle again.
+            let remote_handle = app.handle().clone();
+            let remote_dir = data_dir_for(app.handle());
+            tauri::async_runtime::spawn(async move {
+                if remote::settings::load_settings(&remote_dir).enabled {
+                    let manager = remote_handle.state::<remote::manager::RemoteManager>();
+                    if let Err(e) = manager.enable(remote_handle.clone()).await {
+                        eprintln!("remote auto-enable failed: {e}");
+                    }
+                }
+            });
+
             #[cfg(target_os = "macos")]
             install_menu(app.handle())?;
 
@@ -341,6 +358,18 @@ pub fn run() {
             commands::agent::agent_set_permission_mode,
             commands::agent::agent_permission_reply,
             commands::agent::agent_question_reply,
+            commands::remote::remote_status,
+            commands::remote::remote_set_enabled,
+            commands::remote::remote_pairing_begin,
+            commands::remote::remote_pairing_cancel,
+            commands::remote::remote_pair_approve,
+            commands::remote::remote_devices,
+            commands::remote::remote_revoke_device,
+            commands::remote::remote_audit_tail,
+            commands::remote::remote_set_allowed_projects,
+            commands::remote::remote_todo_config,
+            commands::remote::agent_live_sessions,
+            commands::remote::agent_attach_session,
             commands::preview::agent_preview_put,
             commands::bblog::bblog_sections,
             commands::bblog::bblog_publish,
