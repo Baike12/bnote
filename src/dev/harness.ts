@@ -63,6 +63,7 @@ import type { TranscriptLine } from "@/study/transcript";
 import { ProjectsLayout } from "@/components/projects/ProjectsLayout";
 import { runCommand } from "@/commands/registry";
 import { SettingsModal } from "@/components/SettingsModal";
+import DrawingCanvas from "@/components/study/DrawingCanvas";
 import {
   footprintDay,
   footprintRevision,
@@ -167,6 +168,8 @@ declare global {
     __typeChar: (ch: string) => { doc: string; head: number };
     /** Mount the settings modal (the real component plus the page's own store instance), returns the visible text. */
     __mountSettings: () => Promise<string>;
+    /** Mount the real <DrawingCanvas/> on a fake scene (size in px), returns its unmount function once the window is on screen. */
+    __mountDrawing: (size: { width: number; height: number }) => Promise<() => void>;
     /** Mount the focus chip (the real component plus the status bar shell), returns the unmount function. */
     __mountFocusChip: (durations?: number[]) => () => void;
     /** Mount the note pane (the real component), returns the status bar text (for layout checks). */
@@ -707,6 +710,7 @@ function installFakeVault(entries: string[]) {
  */
 let sidebarRoot: ReturnType<typeof createRoot> | null = null;
 let settingsRoot: ReturnType<typeof createRoot> | null = null;
+let drawingRoot: ReturnType<typeof createRoot> | null = null;
 
 window.__mountSidebar = async (entries: string[]) => {
   const dirs = installFakeVault(entries);
@@ -838,6 +842,41 @@ window.__unmountSidebar = () => {
   sidebarRoot?.unmount();
   sidebarRoot = null;
   document.querySelectorAll("#sidebar-host").forEach((el) => el.remove());
+};
+
+/**
+ * Mount the real <DrawingCanvas/> on an empty scene, to verify the floating
+ * window's geometry (size, centering, edge drag) without a backend: the scene
+ * is read through the fake IPC, so the fake vault is installed first.
+ * Returns once `.drawing-window` is on screen (the excalidraw chunk is loaded
+ * lazily, so this is a poll, not a tick).
+ */
+window.__mountDrawing = async (size: { width: number; height: number }) => {
+  installFakeVault([]);
+  await api.writeFile(
+    `${FAKE_ROOT}/test.excalidraw`,
+    JSON.stringify({ type: "excalidraw", elements: [], appState: {}, files: {} }),
+  );
+  useAppStore.getState().patchSettings({ drawingWidth: size.width, drawingHeight: size.height });
+  const host = document.createElement("div");
+  document.body.appendChild(host);
+  drawingRoot = createRoot(host);
+  useAppStore.getState().openDrawingSession({
+    path: `${FAKE_ROOT}/test.excalidraw`,
+    isNew: false,
+    originNote: null,
+    originPos: null,
+  });
+  drawingRoot.render(createElement(DrawingCanvas));
+  for (let i = 0; i < 100 && !document.querySelector(".drawing-window"); i++) {
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  return () => {
+    useAppStore.getState().closeDrawingSession();
+    drawingRoot?.unmount();
+    drawingRoot = null;
+    host.remove();
+  };
 };
 
 /** A fake vault (without the sidebar) plus a ready index: the link completion panel reads flatFiles/recentFiles. */

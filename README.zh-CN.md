@@ -255,6 +255,7 @@ cargo test --manifest-path src-tauri/Cargo.toml   # Rust 测试
 ### 画布与附件
 
 - 通过命令面板打开 Excalidraw 画布；画布有独立键位，切换文件时先保存收尾
+- 画布是一个圆角浮窗：拖标题栏移动，拖边缘或四角调整大小（松手即记住）；默认大小在设置页设置
 - 新建画布保存为 `<name>.excalidraw`，同时导出同名 PNG 供 Markdown 预览
 - 兼容 Obsidian Excalidraw 插件的 `.excalidraw.md`（含 `compressed-json`）
 - 回到来源笔记时，新画布以 `![[...]]` 插入原光标位置

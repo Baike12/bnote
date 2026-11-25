@@ -255,6 +255,7 @@ Code mode is a **mode of its own**, unrelated to the vault: ask the agent on the
 ### Canvas and attachments
 
 - Open an Excalidraw canvas from the command palette; it has its own keymap and saves before switching files
+- The canvas is a rounded floating window (drag the header to move, an edge or corner to resize); the default size is set on the settings page
 - New drawings are saved as `<name>.excalidraw` with a same-named PNG exported for Markdown previews
 - Compatible with the Obsidian Excalidraw plugin's `.excalidraw.md` (including `compressed-json`)
 - Returning to the source note inserts `![[...]]` at the original cursor position

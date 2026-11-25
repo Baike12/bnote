@@ -4,41 +4,145 @@
    here must not depend on being moved relative to another file. */
 /* ===== Canvas (Excalidraw drawing) ===== */
 
-/* Full screen overlay: it covers the main UI but stays below the quick
-   switcher / command palette (100) - switching files with ⌘O is a core path
-   in canvas mode; the toast (300) is still on top. */
+/* Scrim: the canvas is a floating window over the app. It stays above the app
+   (and the native child webviews of study mode) but below the quick switcher /
+   command palette (100) - switching files with ⌘O is a core path in canvas
+   mode; the toast (300) is still on top. */
 .drawing-overlay {
   position: fixed;
   inset: 0;
   z-index: 90;
+  background: var(--scrim);
+}
+
+/* The geometry (left/top/width/height) is an inline style: the drag writes it
+   straight to the DOM, and the pure model in app/drawingWindow.ts keeps it
+   inside the viewport and above the minimum size. */
+.drawing-window {
+  position: fixed;
   display: flex;
   flex-direction: column;
   background: var(--bg0);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 18px 50px var(--shadow);
+  overflow: hidden;
 }
 
+/* The header is the move handle (no data-tauri-drag-region: that would move
+   the app window instead of the dialog). */
 .drawing-topbar {
   height: 30px;
   min-height: 30px;
   display: flex;
   align-items: center;
-  padding: 0 12px;
+  padding: 0 6px 0 12px;
   border-bottom: 1px solid var(--border);
   background: var(--bg1);
   position: relative;
+  cursor: grab;
+  user-select: none;
+}
+.drawing-topbar:active {
+  cursor: grabbing;
+}
+
+.drawing-close {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-left: 8px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-faint);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+}
+.drawing-close:hover {
+  background: var(--bg2);
+  color: var(--text);
+}
+
+/* Eight invisible grips: 6px along an edge, 14px at a corner, above the canvas
+   so the pointer reaches them before excalidraw's own UI. */
+.drawing-resize {
+  position: absolute;
+  z-index: 2;
+}
+.drawing-resize.is-n {
+  top: 0;
+  left: 14px;
+  right: 14px;
+  height: 6px;
+  cursor: ns-resize;
+}
+.drawing-resize.is-s {
+  bottom: 0;
+  left: 14px;
+  right: 14px;
+  height: 6px;
+  cursor: ns-resize;
+}
+.drawing-resize.is-w {
+  left: 0;
+  top: 14px;
+  bottom: 14px;
+  width: 6px;
+  cursor: ew-resize;
+}
+.drawing-resize.is-e {
+  right: 0;
+  top: 14px;
+  bottom: 14px;
+  width: 6px;
+  cursor: ew-resize;
+}
+.drawing-resize.is-nw,
+.drawing-resize.is-ne,
+.drawing-resize.is-sw,
+.drawing-resize.is-se {
+  width: 14px;
+  height: 14px;
+}
+.drawing-resize.is-nw {
+  top: 0;
+  left: 0;
+  cursor: nwse-resize;
+}
+.drawing-resize.is-se {
+  bottom: 0;
+  right: 0;
+  cursor: nwse-resize;
+}
+.drawing-resize.is-ne {
+  top: 0;
+  right: 0;
+  cursor: nesw-resize;
+}
+.drawing-resize.is-sw {
+  bottom: 0;
+  left: 0;
+  cursor: nesw-resize;
 }
 
 /* The file name is absolutely centered: room is left on the left for the
-   macOS traffic lights and on the right for the hint text. */
+   window edge and on the right for the hint text and the close button. */
 .drawing-title {
   position: absolute;
   left: 50%;
   transform: translateX(-50%);
-  max-width: 46vw;
+  max-width: 50%;
   font-size: 12px;
   color: var(--text);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  pointer-events: none;
 }
 
 .drawing-save {
@@ -91,8 +195,10 @@
   font-size: 14px;
 }
 .drawing-error pre {
-  max-width: 70vw;
-  max-height: 40vh;
+  max-width: 80%;
+  max-height: 60%;
+  white-space: pre-wrap;
+  word-break: break-word;
   overflow: auto;
   font-size: 12px;
   color: var(--danger);

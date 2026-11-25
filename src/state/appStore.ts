@@ -18,6 +18,7 @@ import { DEFAULT_TYPEWRITER_POSITION } from "@/editor/typewriterPosition";
 import { TREE_DEFAULT_WIDTH } from "@/code/treeWidth";
 import { TERM_DEFAULT_HEIGHT } from "@/code/term/tabs";
 import { DEFAULT_PROJECTS_WIDTH } from "@/code/projectsWidth";
+import { DRAWING_DEFAULT_HEIGHT, DRAWING_DEFAULT_WIDTH } from "@/app/drawingWindow";
 import { DEFAULT_AGENT_WIDTH, DEFAULT_CONTENT_WIDTH } from "@/study/layoutModel";
 import { DEFAULT_DAILY_WIDTH, DEFAULT_SIDE_WIDTH } from "@/projects/layoutModel";
 import { DEFAULT_INVEST_CONTENT_WIDTH, DEFAULT_INVEST_SIDE_WIDTH } from "@/invest/layoutModel";
@@ -202,6 +203,14 @@ export interface Settings {
    */
   studyTranslate: { enabled: boolean };
   fontSize: number;
+  /**
+   * The size the drawing canvas opens with (px): the Excalidraw canvas is a
+   * rounded floating window, not a full-screen overlay. Dragging its edge
+   * writes the same preference back, so "adjusted" and "default" are one
+   * value; the display is clamped to the viewport, the preference is not.
+   */
+  drawingWidth: number;
+  drawingHeight: number;
   ime: ImeSettings;
   /** The LaTeX Suite feature switches (aligned with obsidian-latex-suite, see editor/snippets/config) */
   latex: LatexConfig;
@@ -250,6 +259,8 @@ export const DEFAULT_SETTINGS: Settings = {
   agentPermissionMode: "auto",
   studyTranslate: { enabled: false },
   fontSize: 16,
+  drawingWidth: DRAWING_DEFAULT_WIDTH,
+  drawingHeight: DRAWING_DEFAULT_HEIGHT,
   ime: {
     enabled: true,
     chineseFields: true,
