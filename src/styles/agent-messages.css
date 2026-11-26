@@ -375,6 +375,45 @@
   margin: 6px 0;
 }
 .agent-md pre.agent-code code { background: transparent; padding: 0; }
+/* A fenced block and its copy button: the wrapper owns the outer margin so the
+   button pins to the block's corner instead of scrolling with the code. */
+.agent-md .agent-code-wrap {
+  position: relative;
+  margin: 6px 0;
+}
+.agent-md .agent-code-wrap > pre.agent-code {
+  margin: 0;
+  /* Space for the pinned button, so a short first line does not run under it. */
+  padding-right: 32px;
+}
+/* The affordance stays invisible until hover: a filled chip on every block
+   reads as part of the code. On hover the chip becomes opaque so a long line
+   scrolling underneath does not show through the icon. The transparent border
+   reserves the hover box, so nothing shifts when it fills in. */
+.agent-md .agent-code-copy {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-faint);
+  cursor: pointer;
+  opacity: 0.7;
+}
+.agent-md .agent-code-copy:hover {
+  color: var(--accent);
+  background: var(--bg2);
+  border-color: var(--border);
+  opacity: 1;
+}
+.agent-md .agent-code-copy svg { width: 12px; height: 12px; }
 /* Inline HTML preview of an agent reply: a sandboxed iframe fed by the native
    agent-preview protocol (commands/preview.rs), with a preview/code toggle. */
 .agent-html-preview {
