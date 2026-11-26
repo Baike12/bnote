@@ -16,7 +16,12 @@ import { MermaidBlock } from "@/components/agent/MermaidBlock";
 import { CodeBlock } from "@/components/CodeBlock";
 import { splitAgentMarkdown } from "@/study/agentMarkdown";
 import { ThinkingBlock } from "./ThinkingBlock";
-import { applySectionToggle, openWhenSettled, type WorkSection } from "./turnWork";
+import {
+  applySectionToggle,
+  openWhenSettled,
+  openWhileStreaming,
+  type WorkSection,
+} from "./turnWork";
 import {
   canonicalToolName,
   stripAgentTrailer,
@@ -313,6 +318,19 @@ function TurnWork({
     const timer = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(timer);
   }, [streaming]);
+
+  // While streaming the section follows the answer row: it collapses as soon
+  // as the trailing text starts streaming below it, so the end of the turn
+  // does not shrink the section under the answer already being read. A tool
+  // call turns that text into narration (it moves back inside the section) and
+  // the section reopens. Rules: `./turnWork.ts`.
+  useEffect(() => {
+    if (!streaming) return;
+    setSection((current) => {
+      const open = openWhileStreaming(current, answer);
+      return open === current.open ? current : { ...current, open };
+    });
+  }, [streaming, answer]);
 
   // Streaming → done edge: collapse once (ZCode's assistantHistoryDefaultOpen
   // flip), except where openWhenSettled keeps the work on screen.

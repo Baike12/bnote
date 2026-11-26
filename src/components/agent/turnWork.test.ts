@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { applySectionToggle, openWhenSettled, type WorkSection } from "./turnWork";
+import {
+  applySectionToggle,
+  openWhenSettled,
+  openWhileStreaming,
+  type WorkSection,
+} from "./turnWork";
 
 /**
  * The rules of a turn's work section: the streaming→done collapse, the user's
@@ -45,6 +50,29 @@ describe("applySectionToggle", () => {
     expect(applySectionToggle(open(true), { own: false, next: false, rendered: true })).toEqual(
       open(true),
     );
+  });
+});
+
+describe("openWhileStreaming (the answer's first text row)", () => {
+  it("collapses as soon as the answer starts streaming, not at the turn's end", () => {
+    expect(openWhileStreaming(open(), true)).toBe(false);
+    expect(openWhileStreaming(closed, true)).toBe(false);
+  });
+
+  it("stays open while the turn has no trailing text row", () => {
+    expect(openWhileStreaming(open(), false)).toBe(true);
+  });
+
+  it("a tool after the text makes it narration again: the section reopens", () => {
+    // The same rule that draws the trailing text outside the section: when a
+    // tool step follows, `answer` is false again and the row moves back in.
+    const collapsedByRule = { open: false, inspected: false };
+    expect(openWhileStreaming(collapsedByRule, false)).toBe(true);
+  });
+
+  it("the user's own choice outranks the auto state in both directions", () => {
+    expect(openWhileStreaming(open(true), true)).toBe(true);
+    expect(openWhileStreaming({ open: false, inspected: true }, false)).toBe(false);
   });
 });
 

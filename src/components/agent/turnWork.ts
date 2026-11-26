@@ -47,6 +47,23 @@ export function applySectionToggle(section: WorkSection, toggle: SectionToggle):
 }
 
 /**
+ * The open state while the turn still streams.
+ *
+ * The answer row is drawn outside the section, so the moment its text starts
+ * the section has nothing the reader is waiting for any more: it collapses
+ * then, not at the turn's end. Collapsing only after the answer had streamed
+ * moved the text being read up by the section's height (observed as a jump).
+ * A tool call after that text turns it into narration again (the row moves
+ * back inside the section) and the section opens with it — both sides follow
+ * the same trailing-text row that decides what is drawn outside. The user's
+ * own choice outranks both, the same rule as `openWhenSettled`.
+ */
+export function openWhileStreaming(section: WorkSection, hasAnswer: boolean): boolean {
+  if (section.inspected) return section.open;
+  return !hasAnswer;
+}
+
+/**
  * The open state once the turn stops streaming.
  *
  * The section auto-collapses to "已工作 N 秒". Two cases keep it open: the
