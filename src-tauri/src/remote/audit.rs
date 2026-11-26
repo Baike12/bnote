@@ -50,9 +50,7 @@ pub fn append(data_dir: &Path, device_id: &str, kind: &str, summary: &str) {
 
 fn append_inner(data_dir: &Path, device_id: &str, kind: &str, summary: &str) -> Result<(), String> {
     let path = settings::audit_file(data_dir);
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| format!("WRITE_FAILED: {e}"))?;
-    }
+    settings::ensure_remote_dir(data_dir)?;
     rotate_if_needed(&path)?;
     let entry = AuditEntry {
         at: now_ms(),
@@ -66,6 +64,12 @@ fn append_inner(data_dir: &Path, device_id: &str, kind: &str, summary: &str) -> 
         .append(true)
         .open(&path)
         .map_err(|e| format!("WRITE_FAILED: {e}"))?;
+    // Summaries can quote the user's prompt; keep the log owner-readable only.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+    }
     writeln!(file, "{line}").map_err(|e| format!("WRITE_FAILED: {e}"))
 }
 

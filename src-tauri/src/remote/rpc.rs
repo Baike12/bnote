@@ -62,23 +62,57 @@ fn project_id_for(session: &Session) -> Option<String> {
     session.ctx.workdir.as_deref().map(settings::project_id_for)
 }
 
+/// The single authorization seam for every session-scoped RPC method. A phone
+/// may only touch a session whose project is on the allowlist, however it
+/// learned the live id: ids are not authority. Without this, a phone could
+/// drive local desktop sessions in non-allowlisted projects (the allowlist is
+/// the boundary protecting against a compromised phone).
+fn authorized(state: &AppState, session: &Session) -> bool {
+    let Some(project_id) = project_id_for(session) else {
+        return false;
+    };
+    settings::allowed_project(&state.data_dir(), &project_id).is_some()
+}
+
 fn live(state: &AppState, live_id: &str) -> Result<Arc<Session>, RpcError> {
-    let registry = state
-        .sessions
-        .lock()
-        .map_err(|_| RpcError::new("INTERNAL", "session registry poisoned"))?;
-    registry
-        .get(live_id)
-        .cloned()
-        .ok_or_else(|| RpcError::new("SESSION_NOT_FOUND", "session is not live"))
+    let session = {
+        let registry = state
+            .sessions
+            .lock()
+            .map_err(|_| RpcError::new("INTERNAL", "session registry poisoned"))?;
+        registry.get(live_id).cloned()
+    }
+    .ok_or_else(|| RpcError::new("SESSION_NOT_FOUND", "session is not live"))?;
+    if !authorized(state, &session) {
+        return Err(RpcError::new(
+            "NOT_FOUND",
+            "session is not on the allowlist",
+        ));
+    }
+    Ok(session)
 }
 
 fn live_by_transcript(state: &AppState, transcript_id: &str) -> Option<Arc<Session>> {
-    let registry = state.sessions.lock().ok()?;
-    registry
-        .values()
-        .find(|s| s.transcript_id() == transcript_id)
-        .cloned()
+    // Snapshot the registry, then check the allowlist outside the lock: the
+    // check reads settings from disk.
+    let sessions: Vec<Arc<Session>> = {
+        let registry = state.sessions.lock().ok()?;
+        registry.values().cloned().collect()
+    };
+    sessions
+        .into_iter()
+        .find(|s| s.transcript_id() == transcript_id && authorized(state, s))
+}
+
+/// Runs blocking work (git, file copies) off the async runtime.
+async fn blocking<T, F>(f: F) -> Result<T, RpcError>
+where
+    F: FnOnce() -> T + Send + 'static,
+    T: Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(f)
+        .await
+        .map_err(|e| RpcError::new("INTERNAL", format!("JOIN_FAILED: {e}")))
 }
 
 fn title_of(session: &Session) -> String {
@@ -265,6 +299,12 @@ pub async fn dispatch(
                 .get("projectId")
                 .and_then(Value::as_str)
                 .ok_or_else(|| RpcError::new("BAD_PARAMS", "projectId"))?;
+            if settings::allowed_project(&data_dir, project_id).is_none() {
+                return Err(RpcError::new(
+                    "BAD_PARAMS",
+                    "project is not on the allowlist",
+                ));
+            }
             let registry = state
                 .sessions
                 .lock()
@@ -380,6 +420,14 @@ pub async fn dispatch(
                 .and_then(Value::as_str)
                 .unwrap_or("")
                 .to_string();
+            // The desktop ignores `user_message` events carrying an empty
+            // clientId (they are its own echo). A remote send must therefore
+            // never be empty, even when the phone omits the field.
+            let client_id = if client_id.is_empty() {
+                super::crypto::hex_encode(&super::crypto::random::<8>())
+            } else {
+                client_id
+            };
             let session = live(&state, live_id)?;
             if text.trim().is_empty() {
                 return Err(RpcError::new("BAD_PARAMS", "empty message"));
@@ -398,7 +446,12 @@ pub async fn dispatch(
             }
             if let Some(workdir) = session.ctx.workdir.clone() {
                 let items = session.history().len();
-                if let Ok(cp) = checkpoint::create(&workdir, &data_dir, &session.id, items) {
+                let live_id = session.id.clone();
+                let dir = data_dir.clone();
+                // git + file copies: never on the async worker.
+                let created =
+                    blocking(move || checkpoint::create(&workdir, &dir, &live_id, items)).await?;
+                if let Ok(cp) = created {
                     handle.app.state::<RemoteManager>().remember_checkpoint(cp);
                 }
             }
@@ -559,7 +612,11 @@ pub async fn dispatch(
                 .workdir
                 .clone()
                 .ok_or_else(|| RpcError::new("BAD_PARAMS", "session has no workdir"))?;
-            let cp = checkpoint::create(&workdir, &data_dir, &session.id, session.history().len())
+            let live_id = session.id.clone();
+            let dir = data_dir.clone();
+            let items = session.history().len();
+            let cp = blocking(move || checkpoint::create(&workdir, &dir, &live_id, items))
+                .await?
                 .map_err(|e| RpcError::new("INTERNAL", e))?;
             handle
                 .app
@@ -587,7 +644,10 @@ pub async fn dispatch(
                 .workdir
                 .clone()
                 .ok_or_else(|| RpcError::new("BAD_PARAMS", "session has no workdir"))?;
-            checkpoint::rollback(&workdir, &data_dir, &cp)
+            let dir = data_dir.clone();
+            let restore = cp.clone();
+            blocking(move || checkpoint::rollback(&workdir, &dir, &restore))
+                .await?
                 .map_err(|e| RpcError::new("INTERNAL", e))?;
             if let Ok(mut items) = session.items.lock() {
                 let len = items.len();
@@ -609,8 +669,10 @@ pub async fn dispatch(
                 .clone()
                 .ok_or_else(|| RpcError::new("BAD_PARAMS", "session has no workdir"))?;
             let cp = checkpoint_for(&handle, &params, &session)?;
-            let (files, _) = diff_files(&workdir, &data_dir, &cp)?;
-            Ok(json!({"files": files, "checkpointId": cp.checkpoint_id}))
+            let checkpoint_id = cp.checkpoint_id.clone();
+            let dir = data_dir.clone();
+            let (files, _) = blocking(move || diff_files(&workdir, &dir, &cp)).await??;
+            Ok(json!({"files": files, "checkpointId": checkpoint_id}))
         }
         "diff.file" => {
             let live_id = str_param(&params, "liveId")?;
@@ -622,7 +684,10 @@ pub async fn dispatch(
                 .clone()
                 .ok_or_else(|| RpcError::new("BAD_PARAMS", "session has no workdir"))?;
             let cp = checkpoint_for(&handle, &params, &session)?;
-            let (patch, truncated) = diff_file(&workdir, &data_dir, &cp, path)?;
+            let dir = data_dir.clone();
+            let rel = path.to_string();
+            let (patch, truncated) =
+                blocking(move || diff_file(&workdir, &dir, &cp, &rel)).await??;
             Ok(json!({"path": path, "patch": patch, "truncated": truncated}))
         }
         _ => Err(RpcError::new("UNKNOWN_METHOD", method)),
@@ -635,13 +700,22 @@ fn checkpoint_for(
     session: &Arc<Session>,
 ) -> Result<checkpoint::Checkpoint, RpcError> {
     let manager = handle.app.state::<RemoteManager>();
-    if let Some(id) = params.get("checkpointId").and_then(Value::as_str) {
-        return checkpoint::load(&handle.app.state::<AppState>().data_dir(), id)
-            .map_err(|e| RpcError::new("NOT_FOUND", e));
+    let checkpoint = match params.get("checkpointId").and_then(Value::as_str) {
+        Some(id) => checkpoint::load(&handle.app.state::<AppState>().data_dir(), id)
+            .map_err(|e| RpcError::new("NOT_FOUND", e))?,
+        None => manager
+            .checkpoint_for(&session.id)
+            .ok_or_else(|| RpcError::new("CHECKPOINT_REQUIRED", "no checkpoint for this turn"))?,
+    };
+    // An id alone is not authority: a checkpoint from another session must not
+    // drive this session's diff (rollback already enforces the same rule).
+    if checkpoint.live_id != session.id {
+        return Err(RpcError::new(
+            "BAD_PARAMS",
+            "checkpoint belongs to another session",
+        ));
     }
-    manager
-        .checkpoint_for(&session.id)
-        .ok_or_else(|| RpcError::new("CHECKPOINT_REQUIRED", "no checkpoint for this turn"))
+    Ok(checkpoint)
 }
 
 fn git(workdir: &std::path::Path, args: &[&str]) -> Result<String, RpcError> {

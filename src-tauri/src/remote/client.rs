@@ -293,9 +293,30 @@ struct Conn<'a> {
     handle: ClientHandle,
 }
 
+/// The device map is one entry per phone id; a room member can invent ids, so
+/// the count is capped rather than trusted.
+const MAX_DEVICES: usize = 64;
+
+fn is_hex32(value: &str) -> bool {
+    value.len() == 32
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
 impl Conn<'_> {
+    /// One relay frame. Only a relay-level error or a failed socket write is
+    /// fatal (it ends the connection and triggers the reconnect backoff); every
+    /// frame-level problem is attributed and dropped, so one phone's bad frame
+    /// cannot disconnect the others.
     async fn on_frame(&mut self, raw: &[u8], write: &mut Write) -> Result<(), String> {
-        let f = RelayFrame::decode(raw).map_err(|e| e.to_string())?;
+        let f = match RelayFrame::decode(raw) {
+            Ok(frame) => frame,
+            Err(e) => {
+                self.note_error(&e.to_string());
+                return Ok(());
+            }
+        };
         match f.kind {
             FrameType::Ping => self.send_frame(RelayFrame::pong(), write).await,
             FrameType::Pong => Ok(()),
@@ -303,26 +324,49 @@ impl Conn<'_> {
             // Presence is relay-owned and tells phones whether a host socket
             // exists; the host is the one being announced, so it ignores it.
             FrameType::Presence => Ok(()),
-            FrameType::Data => {
-                let device = f.device.clone();
-                if f.msg_id.is_empty() {
-                    return Ok(());
-                }
-                let entry = self.devices.entry(device.clone()).or_default();
-                let complete = entry.reasm.push(
-                    f.seq,
-                    &f.msg_id,
-                    f.chunk,
-                    f.chunks,
-                    f.total,
-                    f.payload.clone(),
-                );
-                match complete {
-                    Some((seq, message)) => self.on_message(&device, seq, &message, write).await,
-                    None => Ok(()),
-                }
-            }
+            FrameType::Data => self.on_data(f, write).await,
             _ => Ok(()),
+        }
+    }
+
+    async fn on_data(&mut self, f: RelayFrame, write: &mut Write) -> Result<(), String> {
+        if f.msg_id.is_empty() || !is_hex32(&f.device) {
+            return Ok(());
+        }
+        // The relay-visible fields (room, chunk arithmetic, payload length) are
+        // validated before anything is allocated or decrypted; `Reassembler`
+        // relies on that contract.
+        if let Err(e) = f.validate_data(&self.room, &f.device) {
+            self.note_error(&e.to_string());
+            return Ok(());
+        }
+        let device = f.device.clone();
+        if !self.devices.contains_key(&device) && self.devices.len() >= MAX_DEVICES {
+            return Ok(());
+        }
+        let entry = self.devices.entry(device.clone()).or_default();
+        let complete = entry
+            .reasm
+            .push(f.seq, &f.msg_id, f.chunk, f.chunks, f.total, f.payload);
+        match complete {
+            Some((seq, message)) => self.on_message(&device, seq, &message, write).await,
+            None => Ok(()),
+        }
+    }
+
+    fn note_error(&self, message: &str) {
+        self.handle.app.emit_remote_error(message);
+    }
+
+    /// Drops one device's E2E session without touching the socket. The phone
+    /// re-handshakes on its next `hs_start`.
+    fn reset_device(&mut self, device: &str) {
+        if let Some(state) = self.devices.get_mut(device) {
+            state.established = false;
+            state.handshake = None;
+            state.keys = None;
+            state.recv = ReplayWindow::default();
+            state.send_seq = 0;
         }
     }
 
@@ -353,27 +397,42 @@ impl Conn<'_> {
             .unwrap_or(false);
 
         if established {
-            let keys = self
-                .devices
-                .get(device)
-                .and_then(|d| d.keys)
-                .ok_or("BAD_FRAME: no key")?;
             if seq < 2 {
                 return Ok(());
             }
-            let state = self
-                .devices
-                .get_mut(device)
-                .ok_or("BAD_FRAME: unknown device")?;
-            if !state.recv.accept(seq) {
-                return Ok(()); // duplicate or outside the window
-            }
+            let Some(keys) = self.devices.get(device).and_then(|d| d.keys) else {
+                return Ok(());
+            };
+            // Authenticate first: a forged seq must not advance the replay
+            // window. Only a frame that opens cleanly is recorded.
             let plaintext = match crypto::open(&keys.t2h, &self.room, "terminal", seq, message) {
                 Ok(plain) => plain,
-                Err(e) => return Err(format!("E2E_FAILED: {e}")),
+                Err(e) => {
+                    // Drop only this device and tell it to re-handshake; the
+                    // session it held is unusable, the socket is not.
+                    self.reset_device(device);
+                    self.note_error(&format!("E2E_FAILED: {e}"));
+                    let _ = self
+                        .send_plain(
+                            device,
+                            &keys::hs_error("E2E_FAILED", "re-handshake required"),
+                            write,
+                        )
+                        .await;
+                    return Ok(());
+                }
             };
+            let accepted = self
+                .devices
+                .get_mut(device)
+                .map(|state| state.recv.accept(seq))
+                .unwrap_or(false);
+            if !accepted {
+                return Ok(()); // duplicate or outside the window
+            }
             self.handle.touch_connection(device);
-            return self.dispatch_rpc(device, &plaintext);
+            self.dispatch_rpc(device, &plaintext);
+            return Ok(());
         }
 
         if handshaking {
@@ -503,11 +562,17 @@ impl Conn<'_> {
             .await;
     }
 
-    fn dispatch_rpc(&self, device: &str, plaintext: &[u8]) -> Result<(), String> {
-        let value: serde_json::Value =
-            serde_json::from_slice(plaintext).map_err(|_| "BAD_FRAME: app JSON".to_string())?;
+    /// A decrypted application message. A malformed body is reported and
+    /// dropped: the peer proved it holds the session key, so a bad body is a
+    /// client bug, not grounds for tearing down every device.
+    fn dispatch_rpc(&self, device: &str, plaintext: &[u8]) {
+        let Ok(value) = serde_json::from_slice::<serde_json::Value>(plaintext) else {
+            self.note_error("BAD_FRAME: app JSON");
+            return;
+        };
         if value.get("t").and_then(|v| v.as_str()) != Some("rpc") {
-            return Err("BAD_FRAME: expected rpc".into());
+            self.note_error("BAD_FRAME: expected rpc");
+            return;
         }
         let id = value
             .get("id")
@@ -538,7 +603,6 @@ impl Conn<'_> {
                 };
             handle.send_app(Some(device), response);
         });
-        Ok(())
     }
 
     async fn send_plain(&self, _device: &str, body: &str, write: &mut Write) -> Result<(), String> {

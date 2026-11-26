@@ -1003,6 +1003,13 @@ export function AgentPanel() {
         const remotePick = startFresh ? null : takePendingRemoteAttach(codeProject.path);
         if (remotePick) {
           if (await attachRemoteSession(remotePick, token)) return;
+          // The phone session ended between the click and the attach (or the
+          // app restarted): fall back to restoring the record, the same
+          // fallback the same-project click path performs.
+          if (sessions.some((s) => s.id === remotePick)) {
+            await restoreFamily(remotePick, sessions, "anchor");
+            return;
+          }
         }
         const picked = startFresh ? null : takePendingCodeSession(codeProject.path);
         if (picked && sessions.some((s) => s.id === picked)) {

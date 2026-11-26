@@ -7,6 +7,7 @@
 //! before seq 1.
 
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
 use tokio::sync::broadcast;
@@ -15,6 +16,20 @@ use crate::agent::types::AgentEvent;
 
 pub const RING: usize = 2000;
 const TURN_TEXT_CAP: usize = 256 << 10;
+
+/// Whether events are retained for remote replay. It follows the remote
+/// channel's enabled state: a user who never pairs a phone pays no memory for
+/// the per-session ring, and every event costs one fewer clone.
+static RING_ENABLED: AtomicBool = AtomicBool::new(false);
+
+/// Called by `RemoteManager` when remote access is enabled/disabled.
+pub fn set_ring_enabled(on: bool) {
+    RING_ENABLED.store(on, Ordering::SeqCst);
+}
+
+pub fn ring_enabled() -> bool {
+    RING_ENABLED.load(Ordering::Relaxed)
+}
 
 #[derive(Debug, Clone)]
 pub struct EventRecord {
@@ -121,11 +136,31 @@ impl SessionEventBus {
         let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         inner.next_seq += 1;
         let seq = inner.next_seq;
+        let retain = ring_enabled();
+        // The common case (no phone paired, no subscriber): nothing to retain
+        // and nobody to deliver to, so the event is not cloned at all. An
+        // enable later starts from a snapshot gap.
+        if !retain && self.tx.receiver_count() == 0 {
+            if !inner.ring.is_empty() {
+                inner.ring.clear();
+            }
+            inner.turn = None;
+            return seq;
+        }
         let record = EventRecord {
             session_id: session_id.to_string(),
             seq,
             event: event.clone(),
         };
+        if !retain {
+            // A subscriber exists but replay is off: deliver without retaining.
+            if !inner.ring.is_empty() {
+                inner.ring.clear();
+            }
+            inner.turn = None;
+            let _ = self.tx.send(record);
+            return seq;
+        }
         if let Some(turn) = inner.turn.as_mut() {
             match &event {
                 AgentEvent::TurnEnd { .. } | AgentEvent::Error { .. } => inner.turn = None,
@@ -218,8 +253,18 @@ mod tests {
         AgentEvent::TextDelta { text: text.into() }
     }
 
+    /// The ring flag is process-global; tests that touch it take this lock and
+    /// turn retention on (the production default is off).
+    fn enable_ring() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: Mutex<()> = Mutex::new(());
+        let guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        set_ring_enabled(true);
+        guard
+    }
+
     #[test]
     fn seq_is_monotonic_and_replay_is_exact() {
+        let _ring = enable_ring();
         let bus = SessionEventBus::new("root".into());
         assert_eq!(bus.publish("root", delta("a")), 1);
         assert_eq!(bus.publish("child", delta("b")), 2);
@@ -238,6 +283,7 @@ mod tests {
 
     #[test]
     fn ring_overflow_requests_a_snapshot() {
+        let _ring = enable_ring();
         let bus = SessionEventBus::new("root".into());
         for i in 0..(RING + 5) {
             bus.publish("root", delta(&i.to_string()));
@@ -249,6 +295,7 @@ mod tests {
 
     #[test]
     fn turn_accumulator_tracks_text_and_tools() {
+        let _ring = enable_ring();
         let bus = SessionEventBus::new("root".into());
         bus.publish("root", AgentEvent::TurnStart { items: 1 });
         bus.publish("root", delta("你好"));
@@ -288,8 +335,24 @@ mod tests {
 
     #[test]
     fn child_events_do_not_start_the_root_turn() {
+        let _ring = enable_ring();
         let bus = SessionEventBus::new("root".into());
         bus.publish("child", AgentEvent::TurnStart { items: 0 });
         assert!(bus.turn().is_none());
+    }
+
+    #[test]
+    fn disabled_ring_retains_nothing_and_reports_a_gap() {
+        let _ring = enable_ring();
+        set_ring_enabled(false);
+        let bus = SessionEventBus::new("root".into());
+        bus.publish("root", delta("a"));
+        bus.publish("root", delta("b"));
+        assert!(bus.turn().is_none());
+        let (events, gap) = bus.replay_after(0);
+        assert!(events.is_empty());
+        assert!(gap);
+        assert_eq!(bus.event_seq(), 2);
+        set_ring_enabled(true);
     }
 }

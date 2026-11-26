@@ -20,8 +20,21 @@ use super::{audit, Origin};
 pub struct RemoteManager {
     inner: Mutex<Inner>,
     checkpoints: Mutex<std::collections::HashMap<String, super::checkpoint::Checkpoint>>,
+    /// The Mac's identity, read from the Keychain once and reused. The
+    /// settings page polls `remote_status` every few seconds; without this
+    /// cache each poll made three Keychain calls.
+    identity: Mutex<IdentityState>,
     enabled: Arc<AtomicBool>,
     status: Arc<Mutex<Status>>,
+}
+
+/// `loaded` distinguishes "not read yet" from "read, no key present", so a
+/// Mac without a remote key does not re-hit the Keychain on every poll.
+#[derive(Default)]
+struct IdentityState {
+    loaded: bool,
+    identity: Option<Identity>,
+    error: Option<String>,
 }
 
 #[derive(Default)]
@@ -60,14 +73,37 @@ impl RemoteManager {
     }
 
     pub async fn enable(&self, app: tauri::AppHandle) -> Result<(), String> {
-        if self.is_enabled() {
+        // Claim the switch atomically: two concurrent commands must not spawn
+        // two relay sockets. Every failure path below gives it back.
+        if self
+            .enabled
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
             return Ok(());
         }
         let data_dir = app.state::<crate::state::AppState>().data_dir();
-        let identity =
-            tauri::async_runtime::spawn_blocking(move || settings::ensure_identity(&data_dir))
-                .await
-                .map_err(|e| format!("JOIN_FAILED: {e}"))??;
+        let identity = match tauri::async_runtime::spawn_blocking(move || {
+            settings::ensure_identity(&data_dir)
+        })
+        .await
+        {
+            Ok(Ok(identity)) => identity,
+            Ok(Err(e)) => {
+                self.enabled.store(false, Ordering::SeqCst);
+                return Err(e);
+            }
+            Err(e) => {
+                self.enabled.store(false, Ordering::SeqCst);
+                return Err(format!("JOIN_FAILED: {e}"));
+            }
+        };
+        self.cache_identity(identity.clone());
+        // `disable` may have run while the Keychain was read; the switch it
+        // cleared wins over this stale enable.
+        if !self.is_enabled() {
+            return Ok(());
+        }
         let data_dir = app.state::<crate::state::AppState>().data_dir();
         let settings = settings::load_settings(&data_dir);
         let base_url = if settings.base_url.trim().is_empty() {
@@ -83,7 +119,9 @@ impl RemoteManager {
         let control_tx = handle.control.clone();
         let task_dir = data_dir.clone();
 
-        self.enabled.store(true, Ordering::SeqCst);
+        // Only now is a phone able to subscribe: retaining events before this
+        // point would cost every local session memory for nothing.
+        super::events::set_ring_enabled(true);
         if let Ok(mut s) = self.status.lock() {
             *s = Status {
                 state: "connecting".into(),
@@ -156,6 +194,7 @@ impl RemoteManager {
 
     pub fn disable(&self, app: &tauri::AppHandle) {
         self.enabled.store(false, Ordering::SeqCst);
+        super::events::set_ring_enabled(false);
         if let Ok(mut inner) = self.inner.lock() {
             if let Some(control) = &inner.control {
                 let _ = control.send(Control::Stop);
@@ -163,6 +202,12 @@ impl RemoteManager {
             inner.task = None;
             inner.control = None;
             inner.handle = None;
+        }
+        // Turn checkpoints are only meaningful while a phone can drive a
+        // session; keep the on-disk records (they are the rollback source) but
+        // drop the in-memory lookup table.
+        if let Ok(mut checkpoints) = self.checkpoints.lock() {
+            checkpoints.clear();
         }
         if let Ok(mut status) = self.status.lock() {
             status.state = "disabled".into();
@@ -198,8 +243,44 @@ impl RemoteManager {
             .map_err(|_| "REMOTE_DISABLED: 连接已停止".to_string())
     }
 
+    /// Loads the identity once (Keychain reads) and serves it from memory
+    /// afterwards. `invalidate_identity` clears the cache when the key changes.
     pub fn identity(&self, data_dir: &std::path::Path) -> Result<Identity, String> {
-        settings::ensure_identity(data_dir)
+        let mut state = self.identity.lock().unwrap_or_else(|e| e.into_inner());
+        if state.loaded {
+            return match (&state.identity, &state.error) {
+                (Some(identity), _) => Ok(identity.clone()),
+                (None, Some(error)) => Err(error.clone()),
+                (None, None) => Err("NO_KEY: 先在设置里生成远程密钥".into()),
+            };
+        }
+        match settings::ensure_identity(data_dir) {
+            Ok(identity) => {
+                state.loaded = true;
+                state.identity = Some(identity.clone());
+                state.error = None;
+                Ok(identity)
+            }
+            Err(error) => {
+                state.loaded = true;
+                state.identity = None;
+                state.error = Some(error.clone());
+                Err(error)
+            }
+        }
+    }
+
+    fn cache_identity(&self, identity: Identity) {
+        let mut state = self.identity.lock().unwrap_or_else(|e| e.into_inner());
+        state.loaded = true;
+        state.identity = Some(identity);
+        state.error = None;
+    }
+
+    /// Called after the key is generated or rotated.
+    pub fn invalidate_identity(&self) {
+        let mut state = self.identity.lock().unwrap_or_else(|e| e.into_inner());
+        *state = IdentityState::default();
     }
 
     /// The checkpoint that opened the latest remote turn of this live session.

@@ -208,6 +208,37 @@ fn checkpoint_dir(data_dir: &Path, live_id: &str, checkpoint_id: &str) -> PathBu
         .join(checkpoint_id)
 }
 
+/// How many checkpoints one live session keeps. Every phone turn pins a stash
+/// commit and copies the untracked files; without a bound the data directory
+/// and the ref namespace grow for the life of the installation.
+const KEEP_PER_SESSION: usize = 20;
+
+/// Deletes the session's oldest checkpoints (directory + hidden ref). Called
+/// after every create; a failure leaves the newest checkpoint intact.
+fn prune(workdir: &Path, data_dir: &Path, live_id: &str, keep: usize) {
+    let root = data_dir.join("remote").join("checkpoints").join(live_id);
+    let Ok(entries) = std::fs::read_dir(&root) else {
+        return;
+    };
+    let mut found: Vec<(u64, String)> = Vec::new();
+    for entry in entries.flatten() {
+        let Ok(bytes) = std::fs::read(entry.path().join("checkpoint.json")) else {
+            continue;
+        };
+        let Ok(record) = serde_json::from_slice::<Record>(&bytes) else {
+            continue;
+        };
+        found.push((record.created_at, record.checkpoint_id));
+    }
+    // Newest first; everything past `keep` is removed.
+    found.sort_by(|a, b| b.0.cmp(&a.0));
+    for (_, id) in found.into_iter().skip(keep) {
+        let _ = std::fs::remove_dir_all(root.join(&id));
+        let reference = format!("refs/bnote/checkpoints/{live_id}/{id}");
+        let _ = run(workdir, &["update-ref", "-d", &reference]);
+    }
+}
+
 /// Copies the regular, non-empty untracked files into the checkpoint. A file
 /// that cannot be read is skipped: an unreadable entry must not fail the turn.
 /// A failed copy is different-a checkpoint that silently lacks its archive
@@ -249,6 +280,9 @@ pub fn create(
 ) -> Result<Checkpoint, String> {
     safe_id(live_id)?;
     ensure_repo(workdir)?;
+    // Before the first side effect (the ref below): a failure here must not
+    // leave a pinned commit behind.
+    super::settings::ensure_remote_dir(data_dir)?;
 
     let head = read_head(workdir)?;
     let branch = if head.is_some() {
@@ -273,6 +307,13 @@ pub fn create(
 
     let paths = untracked_paths(workdir)?;
     let dir = checkpoint_dir(data_dir, live_id, &checkpoint_id);
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| format!("CHECKPOINT_FAILED: {} ({e})", dir.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
+    }
     let archived = archive_untracked(workdir, &dir.join("untracked"), &paths)?;
 
     let record = Record {
@@ -287,11 +328,10 @@ pub fn create(
     };
     let json = serde_json::to_string_pretty(&record)
         .map_err(|e| format!("CHECKPOINT_FAILED: serialize ({e})"))?;
-    std::fs::create_dir_all(&dir)
-        .map_err(|e| format!("CHECKPOINT_FAILED: {} ({e})", dir.display()))?;
     let path = dir.join("checkpoint.json");
     std::fs::write(&path, json)
         .map_err(|e| format!("CHECKPOINT_FAILED: {} ({e})", path.display()))?;
+    prune(workdir, data_dir, live_id, KEEP_PER_SESSION);
     Ok(record.public())
 }
 
@@ -648,6 +688,29 @@ mod tests {
         assert_eq!(loaded.branch, checkpoint.branch);
         assert_eq!(loaded.items_len, 7);
         assert_eq!(loaded.created_at, checkpoint.created_at);
+    }
+
+    #[test]
+    fn prune_keeps_the_newest_and_drops_the_ref() {
+        let scratch = Scratch::new("prune");
+        let repo = init_repo(&scratch);
+        write(&repo.join("a.txt"), "one\n");
+        commit(&repo, "one");
+
+        // Each checkpoint needs a tracked change so `stash create` pins a ref
+        // (a clean tree produces no stash and therefore no ref to drop).
+        write(&repo.join("a.txt"), "two\n");
+        let older = create(&repo, &scratch.data(), "live", 0).expect("older");
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        write(&repo.join("a.txt"), "three\n");
+        let newer = create(&repo, &scratch.data(), "live", 0).expect("newer");
+
+        prune(&repo, &scratch.data(), "live", 1);
+        assert!(load(&scratch.data(), &newer.checkpoint_id).is_ok());
+        assert!(load(&scratch.data(), &older.checkpoint_id).is_err());
+        let refs = checked(&repo, &["for-each-ref", "refs/bnote/checkpoints"]).expect("refs");
+        assert!(refs.contains(&newer.checkpoint_id), "{refs}");
+        assert!(!refs.contains(&older.checkpoint_id), "{refs}");
     }
 
     #[test]

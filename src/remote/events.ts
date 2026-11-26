@@ -13,14 +13,23 @@ export async function installRemoteEvents(): Promise<() => void> {
       const data = event.payload as {
         type?: unknown;
         status?: unknown;
+        /** Status events carry the channel error. */
         error?: unknown;
+        /** Error events carry it as `message` (see `emit_remote_error`). */
+        message?: unknown;
       } | null;
       if (!data || typeof data.type !== "string") return;
+      const reported =
+        typeof data.error === "string"
+          ? data.error
+          : typeof data.message === "string"
+            ? data.message
+            : null;
       const store = useRemoteStore.getState();
       if (data.type === "status" && typeof data.status === "string") {
-        store.setStatus(data.status, typeof data.error === "string" ? data.error : null);
-      } else if (data.type === "error" && typeof data.error === "string") {
-        store.setStatus(store.status, data.error);
+        store.setStatus(data.status, reported);
+      } else if (data.type === "error" && reported !== null) {
+        store.setStatus(store.status, reported);
       }
     });
   } catch {

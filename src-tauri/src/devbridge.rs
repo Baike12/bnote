@@ -619,7 +619,7 @@ async fn dispatch(app: &AppHandle, cmd: &str, args: &Value) -> Result<Value, Str
             arg_str(args, "baseUrl")?
         )
         .await),
-        "remote_key_generate" => json_ok!(remote::remote_key_generate(app.state())),
+        "remote_key_generate" => json_ok!(remote::remote_key_generate(app.state(), app.state())),
         "remote_key_reveal" => json_ok!(remote::remote_key_reveal()),
         "remote_key_rotate" => json_ok!(remote::remote_key_rotate(
             app.clone(),

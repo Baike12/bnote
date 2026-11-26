@@ -337,7 +337,8 @@ impl RelayFrame {
             return Err(FrameError::new("BAD_FRAME", "payload length mismatch"));
         }
         // seq 0 is the handshake's: those frames are plaintext and carry no
-        // AEAD AAD. Encrypted messages start at 1; the E2E layer enforces it.
+        // AEAD AAD. seq 1 is the encrypted `hs_confirm`; application messages
+        // start at 2. The E2E layer enforces the split.
         Ok(())
     }
 }

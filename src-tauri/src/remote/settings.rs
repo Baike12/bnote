@@ -70,6 +70,20 @@ pub fn remote_dir(data_dir: &Path) -> PathBuf {
     data_dir.join("remote")
 }
 
+/// Creates `<data_dir>/remote` with owner-only access. The directory holds the
+/// audit log (user prompts) and checkpoint copies of project files, so no other
+/// local account may traverse it.
+pub fn ensure_remote_dir(data_dir: &Path) -> Result<(), String> {
+    let dir = remote_dir(data_dir);
+    std::fs::create_dir_all(&dir).map_err(|e| format!("WRITE_FAILED: {e}"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
+    }
+    Ok(())
+}
+
 pub fn settings_file(data_dir: &Path) -> PathBuf {
     remote_dir(data_dir).join("settings.json")
 }
@@ -90,8 +104,8 @@ pub fn load_settings(data_dir: &Path) -> RemoteSettings {
 }
 
 pub fn save_settings(data_dir: &Path, settings: &RemoteSettings) -> Result<(), String> {
+    ensure_remote_dir(data_dir)?;
     let dir = remote_dir(data_dir);
-    std::fs::create_dir_all(&dir).map_err(|e| format!("WRITE_FAILED: {e}"))?;
     let path = settings_file(data_dir);
     let tmp = dir.join("settings.json.tmp");
     let raw = serde_json::to_vec_pretty(settings).map_err(|e| e.to_string())?;
@@ -110,9 +124,28 @@ pub fn save_settings(data_dir: &Path, settings: &RemoteSettings) -> Result<(), S
 /// then, so the user must generate one and pair the phone again. Runs before
 /// the window loads; idempotent.
 pub fn migrate(data_dir: &Path) -> Result<bool, String> {
-    let current = load_settings(data_dir);
     let on_disk = std::fs::read(settings_file(data_dir)).ok();
-    if on_disk.is_some() && current.version >= SETTINGS_VERSION {
+    // `existed` is false when the bytes are unreadable: the corrupt file keeps
+    // its own copy under a sidecar name and the layout is rebuilt, so the
+    // user's base URL and allowlist are never silently replaced.
+    let (current, existed) = match &on_disk {
+        None => (RemoteSettings::default(), false),
+        Some(raw) => match serde_json::from_slice::<RemoteSettings>(raw) {
+            Ok(settings) => (settings, true),
+            Err(e) => {
+                let path = settings_file(data_dir);
+                let corrupt = path.with_extension("json.corrupt");
+                let _ = std::fs::rename(&path, &corrupt);
+                eprintln!(
+                    "remote settings unreadable ({e}); moved {} to {}",
+                    path.display(),
+                    corrupt.display()
+                );
+                (RemoteSettings::default(), false)
+            }
+        },
+    };
+    if existed && current.version >= SETTINGS_VERSION {
         return Ok(false);
     }
     let migrated = RemoteSettings {
@@ -253,7 +286,7 @@ pub fn normalize_base_url(raw: &str) -> Result<String, String> {
         return Err("BAD_PARAMS: 只有 localhost 允许使用 http://".into());
     }
     let path = path.trim_end_matches('/').to_string();
-    if path.ends_with("/todo") || path.ends_with("/relay") {
+    if path.ends_with("/todo") || path.ends_with("/relay") || path.ends_with("/relay/ws") {
         return Err("BAD_PARAMS: 服务地址只填到前缀，不要带 /todo 或 /relay".into());
     }
     Ok(format!("{scheme}://{authority}{path}"))
@@ -263,16 +296,23 @@ pub fn todo_url(base_url: &str) -> String {
     format!("{base_url}/todo")
 }
 
+/// The websocket endpoint mirrors the base URL's scheme: `https` uses `wss`,
+/// and the localhost-only `http` development server uses plain `ws`. Building
+/// `wss` unconditionally made an `http://localhost` relay impossible to reach
+/// even though the todo client talks to the same service over plain http.
 pub fn relay_url(base_url: &str) -> Result<String, String> {
-    let rest = base_url
-        .strip_prefix("https://")
-        .or_else(|| base_url.strip_prefix("http://"))
-        .ok_or("BAD_PARAMS: 服务地址缺少 scheme")?;
+    let (scheme, rest) = if let Some(rest) = base_url.strip_prefix("https://") {
+        ("wss", rest)
+    } else if let Some(rest) = base_url.strip_prefix("http://") {
+        ("ws", rest)
+    } else {
+        return Err("BAD_PARAMS: 服务地址缺少 scheme".into());
+    };
     let (authority, path) = match rest.split_once('/') {
         Some((authority, path)) => (authority, format!("/{path}")),
         None => (rest, String::new()),
     };
-    Ok(format!("wss://{authority}{path}/relay/ws"))
+    Ok(format!("{scheme}://{authority}{path}/relay/ws"))
 }
 
 pub fn save_allowed_projects(
@@ -394,6 +434,7 @@ mod tests {
             "https://realbaike.tech/bnote#x",
             "https://realbaike.tech/bnote/todo",
             "https://realbaike.tech/bnote/relay",
+            "https://realbaike.tech/bnote/relay/ws",
         ] {
             assert!(normalize_base_url(bad).is_err(), "accepted {bad}");
         }
@@ -412,7 +453,7 @@ mod tests {
         );
         assert_eq!(
             relay_url("http://localhost:8092").unwrap(),
-            "wss://localhost:8092/relay/ws"
+            "ws://localhost:8092/relay/ws"
         );
     }
 
@@ -434,6 +475,17 @@ mod tests {
         assert_ne!(after.device_id, "11");
         // Idempotent.
         assert!(!migrate(&dir).expect("second migrate"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn corrupt_settings_are_backed_up_not_silently_reset() {
+        let dir = temp_dir("corrupt");
+        std::fs::create_dir_all(remote_dir(&dir)).expect("remote dir");
+        std::fs::write(settings_file(&dir), "{ not json").unwrap();
+        assert!(migrate(&dir).expect("migrate over a backup"));
+        // The unreadable bytes are preserved under the sidecar name.
+        assert!(settings_file(&dir).with_extension("json.corrupt").is_file());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

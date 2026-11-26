@@ -9,6 +9,11 @@ use crate::remote::manager::RemoteManager;
 use crate::remote::{audit, crypto, settings};
 use crate::state::AppState;
 
+fn suffix_of(key: &[u8; 32]) -> String {
+    let hex = crypto::hex_encode(key);
+    hex[hex.len() - 4..].to_string()
+}
+
 fn status_json(state: &AppState, manager: &RemoteManager) -> Value {
     let data_dir = state.data_dir();
     let saved = settings::load_settings(&data_dir);
@@ -21,8 +26,10 @@ fn status_json(state: &AppState, manager: &RemoteManager) -> Value {
         .map(|i| i.room.clone())
         .unwrap_or_default());
     value["deviceId"] = json!(saved.device_id);
-    value["hasKey"] = json!(settings::has_key());
-    value["keySuffix"] = json!(settings::key_suffix());
+    // The identity cache is the single source: one Keychain read per process,
+    // not three per 4-second poll.
+    value["hasKey"] = json!(identity.is_some());
+    value["keySuffix"] = json!(identity.as_ref().map(|i| suffix_of(&i.remote_key)));
     value["connections"] = json!(manager.connections());
     value["allowedProjects"] = json!(saved.allowed_projects);
     value
@@ -50,6 +57,7 @@ pub async fn remote_set_enabled(
         if !settings::has_key() {
             let key = settings::generate_key()?;
             new_key = Some(crypto::hex_encode(&key));
+            manager.invalidate_identity();
         }
         manager.enable(app.clone()).await?;
     } else {
@@ -83,12 +91,16 @@ pub async fn remote_set_base_url(
 }
 
 #[tauri::command]
-pub fn remote_key_generate(state: State<'_, AppState>) -> Result<Value, String> {
+pub fn remote_key_generate(
+    manager: State<'_, RemoteManager>,
+    state: State<'_, AppState>,
+) -> Result<Value, String> {
     let key = settings::generate_key()?;
+    manager.invalidate_identity();
     audit::append(&state.data_dir(), "system", "key", "remote key generated");
     Ok(json!({
         "key": crypto::hex_encode(&key),
-        "keySuffix": settings::key_suffix(),
+        "keySuffix": suffix_of(&key),
     }))
 }
 
@@ -97,7 +109,7 @@ pub fn remote_key_reveal() -> Result<Value, String> {
     let key = settings::reveal_key()?;
     Ok(json!({
         "key": crypto::hex_encode(&key),
-        "keySuffix": settings::key_suffix(),
+        "keySuffix": suffix_of(&key),
     }))
 }
 
@@ -110,6 +122,7 @@ pub async fn remote_key_rotate(
     state: State<'_, AppState>,
 ) -> Result<Value, String> {
     let key = settings::rotate_key()?;
+    manager.invalidate_identity();
     audit::append(
         &state.data_dir(),
         "system",
@@ -119,7 +132,7 @@ pub async fn remote_key_rotate(
     manager.restart(app).await?;
     Ok(json!({
         "key": crypto::hex_encode(&key),
-        "keySuffix": settings::key_suffix(),
+        "keySuffix": suffix_of(&key),
     }))
 }
 

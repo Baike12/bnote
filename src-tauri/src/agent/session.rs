@@ -1542,8 +1542,11 @@ impl Session {
                 });
             }
             // Output-token recovery: raise the ceiling once, then ask the model
-            // to resume where it stopped.
+            // to resume where it stopped. That partial round still belongs in
+            // the remote record: every path out of this block ends or restarts
+            // the round without reaching the recorder below.
             if turn.hit_max_tokens && turn.tool_calls.is_empty() {
+                crate::remote::recorder::record_round(self, &content, &[]);
                 if escalations == 0 {
                     escalations += 1;
                     let escalated = escalated_ceiling(provider.max_tokens);

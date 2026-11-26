@@ -337,9 +337,27 @@ impl ReplayWindow {
 }
 
 /// Collects chunked messages by `msgId` until all chunks arrived.
-#[derive(Default)]
+///
+/// The peer controls every field, so both the chunk arithmetic and the number
+/// of in-flight messages are bounded here rather than trusted: an inconsistent
+/// `(total, chunks)` pair is dropped instead of underflowing, and the map never
+/// holds more than [`PENDING_CAP`] partials.
 pub struct Reassembler {
     pending: std::collections::HashMap<String, Partial>,
+    last_sweep: std::time::Instant,
+}
+
+const PENDING_CAP: usize = 64;
+const PARTIAL_TTL: std::time::Duration = std::time::Duration::from_secs(120);
+const SWEEP_EVERY: std::time::Duration = std::time::Duration::from_secs(30);
+
+impl Default for Reassembler {
+    fn default() -> Self {
+        Self {
+            pending: std::collections::HashMap::new(),
+            last_sweep: std::time::Instant::now(),
+        }
+    }
 }
 
 struct Partial {
@@ -370,14 +388,33 @@ impl Reassembler {
         {
             return None;
         }
+        // `chunks` and `total` are independent peer fields; a pair where the
+        // declared message cannot fill `chunks - 1` full chunks is inconsistent.
+        // Computing the tail with a plain subtraction made `chunks=2, total=1`
+        // wrap (release) or panic (debug).
+        let tail = CHUNK_SIZE
+            .checked_mul(chunks - 1)
+            .and_then(|full| total.checked_sub(full))?;
+        if tail == 0 || tail > CHUNK_SIZE {
+            return None;
+        }
         let want = if chunk + 1 == chunks {
-            total - CHUNK_SIZE * (chunks - 1)
+            tail
         } else {
             CHUNK_SIZE
         };
         if payload.len() != want {
             self.pending.remove(msg_id);
             return None;
+        }
+        if !self.pending.contains_key(msg_id) {
+            if self.last_sweep.elapsed() >= SWEEP_EVERY {
+                self.sweep(PARTIAL_TTL);
+                self.last_sweep = std::time::Instant::now();
+            }
+            if self.pending.len() >= PENDING_CAP {
+                return None;
+            }
         }
         let entry = self
             .pending
@@ -555,5 +592,33 @@ mod tests {
             .is_none());
         assert!(r.push(2, "b", 1, 2, CHUNK_SIZE + 4, vec![0; 4]).is_none());
         assert!(r.is_empty());
+    }
+
+    #[test]
+    fn impossible_chunk_arithmetic_is_dropped_on_every_chunk() {
+        // `chunks=2, total=1` cannot describe a fragmented message: the last
+        // chunk's length would be total - CHUNK_SIZE. Any chunk of such a
+        // message is refused before it can allocate or subtract.
+        let mut r = Reassembler::default();
+        assert!(r.push(1, "a", 1, 2, 1, vec![0]).is_none());
+        assert!(r.push(1, "b", 0, 2, 1, vec![0; CHUNK_SIZE]).is_none());
+        assert!(r.is_empty());
+
+        // Exactly one full chunk of a two-chunk message is also impossible.
+        let mut r = Reassembler::default();
+        assert!(r
+            .push(1, "c", 0, 2, CHUNK_SIZE, vec![0; CHUNK_SIZE])
+            .is_none());
+        assert!(r.is_empty());
+    }
+
+    #[test]
+    fn pending_partials_are_bounded() {
+        let mut r = Reassembler::default();
+        for index in 0..(PENDING_CAP + 10) {
+            let id = format!("{index:032x}");
+            r.push(1, &id, 0, 2, CHUNK_SIZE + 1, vec![0; CHUNK_SIZE]);
+        }
+        assert_eq!(r.len(), PENDING_CAP);
     }
 }

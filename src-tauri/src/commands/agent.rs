@@ -226,18 +226,11 @@ pub async fn agent_start_session(
         invest_scope: invest_scope.clone(),
     });
 
-    // Timestamp + increasing sequence number: opening the main session and
-    // forking a helper session within the same millisecond cannot collide.
-    static SESSION_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let seq = SESSION_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let id = format!(
-        "s{}-{}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis())
-            .unwrap_or(0),
-        seq
-    );
+    // A random live id, not a timestamp counter. The id reaches the remote RPC
+    // surface as the session handle, and a phone that guesses one must not be
+    // able to address a session at all (the allowlist gate is the primary
+    // control; unguessable ids are defense in depth).
+    let id = format!("s{:032x}", rand::random::<u128>());
     let session = Arc::new(create_session(SessionSeed {
         id: id.clone(),
         mode: session_mode,
