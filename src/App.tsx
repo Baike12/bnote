@@ -1,7 +1,7 @@
 import { useEffect, lazy, Suspense } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { agentApi, api } from "@/lib/tauri";
+import { agentApi, api, remoteApi } from "@/lib/tauri";
 import "./commands/builtin";
 import { runCommand } from "@/commands/registry";
 import { installGlobalKeybindings, setKeyModalOpen } from "@/commands/globalKeys";
@@ -219,6 +219,22 @@ export default function App() {
       // notes switch; a legacy boolean is migrated once (see normalizeCodeVim).
       settings.codeVim = normalizeCodeVim(settings.codeVim);
       useAppStore.getState().replaceSettings(settings);
+      // The todo server is derived from the remote base URL. A config written
+      // by the old two-service layout still points at the retired /b-todo
+      // path; correct it here, after the loaded settings are installed, so the
+      // load cannot overwrite the correction (a parallel mount effect used to
+      // lose that race).
+      const remoteStatus = await remoteApi.status().catch(() => null);
+      if (remoteStatus) {
+        const current = useAppStore.getState();
+        const sync = current.settings.daily.sync;
+        const expected = `${remoteStatus.baseUrl}/todo`;
+        if (sync.server !== expected) {
+          current.patchSettings({
+            daily: { ...current.settings.daily, sync: { ...sync, server: expected } },
+          });
+        }
+      }
       // Pomodoro: restore the previous timer state (endsAt is an absolute time, so
       // it is still judged as overtime after a restart).
       // While a focus session is running, restore brings back the exclusive
@@ -350,7 +366,6 @@ export default function App() {
     void installRemoteEvents().then((off) => {
       unlistenRemoteEvents = off;
     });
-
     let unlistenMenuQuit: (() => void) | undefined;
     void listen("bnote:menu-quit", quitApp)
       .then((off) => {

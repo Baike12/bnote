@@ -144,14 +144,14 @@ function SyncCard() {
       />
       <Row
         label="服务器地址"
-        desc="b-todo 服务端地址；裸 IP 默认按 http 处理"
+        desc="由「远程访问」的服务基址自动派生，这里只读"
         control={
           <input
             className="settings-input mono"
             type="text"
-            placeholder="http://101.96.243.197/b-todo"
+            readOnly
             value={sync.server}
-            onChange={(e) => patchSync({ server: e.target.value })}
+            title="在设置 → 远程访问里修改服务基址"
           />
         }
       />

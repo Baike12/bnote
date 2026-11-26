@@ -790,33 +790,41 @@ export interface AgentHistoryEntry {
   timestamp: number;
 }
 
-/** One paired phone (the Mac's device list). */
-export interface RemoteDevice {
+/** One phone currently handshaken over the relay (read-only, self-reported). */
+export interface RemoteConnection {
   deviceId: string;
   name: string;
-  staticPublic: string;
-  createdAt: number;
-  lastSeenAt: number | null;
-  revoked: boolean;
-  revokedAt: number | null;
+  connectedAt: number;
+  lastSeenAt: number;
+  connected: boolean;
 }
 
 export interface RemoteStatus {
   enabled: boolean;
   status: "disabled" | "connecting" | "online" | "offline";
   lastError: string | null;
-  relayUrl: string;
+  /** `https://host/prefix`; `/todo` and `/relay/ws` are derived from it. */
+  baseUrl: string;
+  relayUrl: string | null;
   room: string;
   deviceId: string;
-  devices: RemoteDevice[];
+  hasKey: boolean;
+  /** Last four hex characters of the remote key; never the key itself. */
+  keySuffix: string | null;
+  connections: RemoteConnection[];
   allowedProjects: string[];
-  pairingExpiresAt: number | null;
+}
+
+/** A freshly generated or deliberately revealed key. Shown once. */
+export interface RemoteKey {
+  key: string;
+  keySuffix: string | null;
 }
 
 export interface RemoteAuditEntry {
   at: number;
   deviceId: string;
-  kind: "send" | "permission" | "abort" | "rollback" | "pair" | "revoke" | "system";
+  kind: "send" | "permission" | "abort" | "rollback" | "connect" | "key" | "system";
   summary: string;
 }
 
@@ -828,26 +836,21 @@ export interface LiveSession {
   origin: "local" | "remote";
 }
 
-/** Remote access settings, pairing and the device list. */
+/** Remote access settings, the remote key and the recent connections. */
 export const remoteApi = {
   status: () => invoke<RemoteStatus>("remote_status"),
-  setEnabled: (enabled: boolean, relayUrl?: string) =>
-    invoke<RemoteStatus>("remote_set_enabled", { enabled, relayUrl: relayUrl ?? null }),
-  pairingBegin: () =>
-    invoke<{ payload: string; expiresAt: number; room: string }>("remote_pairing_begin"),
-  pairingCancel: () => invoke<void>("remote_pairing_cancel"),
-  pairApprove: (deviceId: string, allow: boolean) =>
-    invoke<void>("remote_pair_approve", { deviceId, allow }),
-  devices: () => invoke<{ devices: RemoteDevice[] }>("remote_devices"),
-  revokeDevice: (deviceId: string) => invoke<void>("remote_revoke_device", { deviceId }),
+  setEnabled: (enabled: boolean) =>
+    invoke<RemoteStatus & { newKey: string | null }>("remote_set_enabled", { enabled }),
+  setBaseUrl: (baseUrl: string) => invoke<RemoteStatus>("remote_set_base_url", { baseUrl }),
+  keyGenerate: () => invoke<RemoteKey>("remote_key_generate"),
+  keyReveal: () => invoke<RemoteKey>("remote_key_reveal"),
+  keyRotate: () => invoke<RemoteKey>("remote_key_rotate"),
   auditTail: (limit?: number) =>
     invoke<{ entries: RemoteAuditEntry[]; nextCursor: string | null }>("remote_audit_tail", {
       limit: limit ?? null,
     }),
   setAllowedProjects: (projects: string[]) =>
     invoke<{ allowedProjects: string[] }>("remote_set_allowed_projects", { projects }),
-  todoConfig: (deviceId: string, server: string, key: string) =>
-    invoke<void>("remote_todo_config", { deviceId, server, key }),
   liveSessions: () => invoke<{ sessions: LiveSession[] }>("agent_live_sessions"),
   attachSession: (transcriptId: string) =>
     invoke<{

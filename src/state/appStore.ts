@@ -56,7 +56,9 @@ export interface QuickAddCommand {
 export interface DailySyncSettings {
   /** Master switch: off = no connection is made and nothing else in the app changes. */
   enabled: boolean;
-  /** The b-todo server address, e.g. `http://101.96.243.197/b-todo`; a bare host defaults to http. */
+  /** The b-todo endpoint derived from the remote base URL, e.g.
+   *  `https://realbaike.tech/bnote/todo`. Settings → 远程访问 owns the base URL;
+   *  this value is corrected at startup and on save. */
   server: string;
   /** The shared sync key provisioned at server setup; never leaves this machine except as a derived token. */
   key: string;
@@ -272,7 +274,10 @@ export const DEFAULT_SETTINGS: Settings = {
   latex: { ...DEFAULT_LATEX_CONFIG },
   quickAdd: [],
   templatesDir: "",
-  daily: { template: "", sync: { enabled: false, server: "", key: "" } },
+  daily: {
+    template: "",
+    sync: { enabled: false, server: "https://realbaike.tech/bnote/todo", key: "" },
+  },
 };
 
 export type ModalKind = "switcher" | "palette" | "settings" | "quickadd" | "quicktodo" | null;
