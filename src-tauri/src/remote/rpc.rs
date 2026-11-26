@@ -1,4 +1,4 @@
-//! The RPC surface the phone drives (`protocol/v1.md` §6.3).
+//! The RPC surface the phone drives (`protocol/v2.md` §7.3).
 //!
 //! Every method is a thin wrapper over an existing command or Session API; the
 //! dispatcher is an allowlist, not a generic command forwarder. In particular
@@ -17,9 +17,8 @@ use crate::state::AppState;
 
 use super::audit;
 use super::checkpoint;
-use super::client::{ClientHandle, Control};
+use super::client::ClientHandle;
 use super::manager::RemoteManager;
-use super::pairing;
 use super::recorder;
 use super::settings;
 use super::transcript;
@@ -552,25 +551,6 @@ pub async fn dispatch(
                 }))
             }
         }
-        "devices.list" => Ok(json!({"devices": pairing::load_devices(&data_dir)})),
-        "devices.revoke" => {
-            let device_id = str_param(&params, "deviceId")?;
-            pairing::revoke_device(&data_dir, device_id)
-                .map_err(|e| RpcError::new("NOT_FOUND", e))?;
-            let _ = handle.control.send(Control::Revoke {
-                device_id: device_id.to_string(),
-            });
-            audit::append(&data_dir, device, "revoke", device_id);
-            Ok(json!({}))
-        }
-        "audit.tail" => {
-            let limit = params.get("limit").and_then(Value::as_u64).unwrap_or(50) as usize;
-            Ok(json!({
-                "entries": audit::tail(&data_dir, limit),
-                "nextCursor": Value::Null,
-            }))
-        }
-        "todo.config" => Ok(json!({})),
         "checkpoint.create" => {
             let live_id = str_param(&params, "liveId")?;
             let session = live(&state, live_id)?;

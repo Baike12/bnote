@@ -1,9 +1,9 @@
-//! Remote-access configuration and the Mac's long-term identity.
+//! Remote-access configuration, the service base URL, and the Mac's keys.
 //!
-//! `settings.json` and `devices.json` are plain files with mode 0600; the
-//! private keys and the relay host token live in the macOS Keychain. The
-//! certificate used for TLS pinning is compiled in, so a fresh install has the
-//! only root it will ever accept.
+//! `settings.json` is a plain file with mode 0600. The remote key and the relay
+//! host token live in the macOS Keychain. Everything network-facing derives
+//! from the base URL and the remote key: no certificate, room or relay URL is
+//! stored separately.
 
 use std::path::{Path, PathBuf};
 
@@ -12,35 +12,44 @@ use serde::{Deserialize, Serialize};
 use super::crypto;
 
 pub const KEYCHAIN_SERVICE: &str = "com.baike.bnote.remote";
-pub const DEFAULT_RELAY: &str = "wss://101.96.243.197/bnote-relay/ws";
+pub const DEFAULT_BASE_URL: &str = "https://realbaike.tech/bnote";
+pub const SETTINGS_VERSION: u32 = 2;
 
-/// Private CA that signs the relay's IP certificate (CN=101.96.243.197,
-/// CA:FALSE, valid to 2036-11-21). The Mac trusts only this CA; the iPhone
-/// pins the leaf SPKI, which stays stable because the leaf reuses its key.
-pub const ROOT_CERT_PEM: &[u8] = include_bytes!("../../resources/bnote-ca.crt");
-
-const ACCOUNT_ED: &str = "mac-ed25519-seed";
-const ACCOUNT_X: &str = "mac-x25519-secret";
+const ACCOUNT_KEY: &str = "remote-key";
 const ACCOUNT_TOKEN: &str = "relay-host-token";
+const LEGACY_ACCOUNT_ED: &str = "mac-ed25519-seed";
+const LEGACY_ACCOUNT_X: &str = "mac-x25519-secret";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default, rename_all = "camelCase")]
+#[serde(rename_all = "camelCase")]
 pub struct RemoteSettings {
+    /// 2 is the merged single-service layout. A file without this field is a
+    /// v1 (two-service) install and is migrated once.
+    #[serde(default)]
+    pub version: u32,
+    #[serde(default)]
     pub enabled: bool,
-    pub relay_url: String,
-    pub room: String,
+    /// `https://host/prefix`; `/todo` and `/relay/ws` are appended by use.
+    #[serde(default = "default_base_url")]
+    pub base_url: String,
+    #[serde(default)]
     pub device_id: String,
     /// Canonical project roots the phone may list and drive. Empty on first
     /// enable; filled from the desktop's recent projects.
+    #[serde(default)]
     pub allowed_projects: Vec<String>,
+}
+
+fn default_base_url() -> String {
+    DEFAULT_BASE_URL.to_string()
 }
 
 impl Default for RemoteSettings {
     fn default() -> Self {
         Self {
+            version: SETTINGS_VERSION,
             enabled: false,
-            relay_url: DEFAULT_RELAY.into(),
-            room: String::new(),
+            base_url: DEFAULT_BASE_URL.into(),
             device_id: String::new(),
             allowed_projects: Vec::new(),
         }
@@ -51,11 +60,10 @@ impl Default for RemoteSettings {
 pub struct Identity {
     pub device_id: String,
     pub room: String,
+    pub psk: [u8; 32],
     pub host_token: [u8; 32],
-    pub mac_ed_seed: [u8; 32],
-    pub mac_ed_public: [u8; 32],
-    pub mac_x_secret: [u8; 32],
-    pub mac_x_public: [u8; 32],
+    /// Present only to reveal/copy/rotate; never sent to the relay.
+    pub remote_key: [u8; 32],
 }
 
 pub fn remote_dir(data_dir: &Path) -> PathBuf {
@@ -64,10 +72,6 @@ pub fn remote_dir(data_dir: &Path) -> PathBuf {
 
 pub fn settings_file(data_dir: &Path) -> PathBuf {
     remote_dir(data_dir).join("settings.json")
-}
-
-pub fn devices_file(data_dir: &Path) -> PathBuf {
-    remote_dir(data_dir).join("devices.json")
 }
 
 pub fn audit_file(data_dir: &Path) -> PathBuf {
@@ -101,46 +105,58 @@ pub fn save_settings(data_dir: &Path, settings: &RemoteSettings) -> Result<(), S
     Ok(())
 }
 
-/// Loads or creates the Mac's identity. The room and host token are created
-/// once; rotating the room is an explicit operation (`rotate_room`).
+/// One-time migration from the two-service layout (v1: relayUrl + room +
+/// Ed25519/X25519 identities + devices.json). The remote key did not exist
+/// then, so the user must generate one and pair the phone again. Runs before
+/// the window loads; idempotent.
+pub fn migrate(data_dir: &Path) -> Result<bool, String> {
+    let current = load_settings(data_dir);
+    let on_disk = std::fs::read(settings_file(data_dir)).ok();
+    if on_disk.is_some() && current.version >= SETTINGS_VERSION {
+        return Ok(false);
+    }
+    let migrated = RemoteSettings {
+        version: SETTINGS_VERSION,
+        enabled: false,
+        base_url: DEFAULT_BASE_URL.into(),
+        device_id: crypto::hex_encode(&crypto::random::<16>()),
+        allowed_projects: current.allowed_projects,
+    };
+    save_settings(data_dir, &migrated)?;
+
+    let _ = std::fs::remove_file(remote_dir(data_dir).join("devices.json"));
+    for account in [LEGACY_ACCOUNT_ED, LEGACY_ACCOUNT_X, ACCOUNT_TOKEN] {
+        keychain_delete(account);
+    }
+    super::audit::append(
+        data_dir,
+        "system",
+        "key",
+        "remote settings migrated to the single-service layout; remote disabled",
+    );
+    Ok(true)
+}
+
+/// Loads the Mac's identity. The room and PSK derive from the remote key; the
+/// host token is generated once and never leaves the Keychain.
 pub fn ensure_identity(data_dir: &Path) -> Result<Identity, String> {
     let mut settings = load_settings(data_dir);
     let mut changed = false;
-
-    if settings.room.is_empty() {
-        settings.room = crypto::hex_encode(&crypto::random::<16>());
+    if settings.version != SETTINGS_VERSION {
+        settings.version = SETTINGS_VERSION;
         changed = true;
     }
     if settings.device_id.is_empty() {
         settings.device_id = crypto::hex_encode(&crypto::random::<16>());
         changed = true;
     }
-
-    let mac_ed_seed = match keychain_get(ACCOUNT_ED)? {
+    let remote_key = match keychain_get(ACCOUNT_KEY)? {
         Some(bytes) if bytes.len() == 32 => {
-            let mut seed = [0u8; 32];
-            seed.copy_from_slice(&bytes);
-            seed
+            let mut key = [0u8; 32];
+            key.copy_from_slice(&bytes);
+            key
         }
-        _ => {
-            let (seed, _) = crypto::new_ed25519();
-            keychain_set(ACCOUNT_ED, &seed)?;
-            changed = true;
-            seed
-        }
-    };
-    let mac_x_secret = match keychain_get(ACCOUNT_X)? {
-        Some(bytes) if bytes.len() == 32 => {
-            let mut secret = [0u8; 32];
-            secret.copy_from_slice(&bytes);
-            secret
-        }
-        _ => {
-            let (secret, _) = crypto::new_x25519();
-            keychain_set(ACCOUNT_X, &secret)?;
-            changed = true;
-            secret
-        }
+        _ => return Err("NO_KEY: 先在设置里生成远程密钥".into()),
     };
     let host_token = match keychain_get(ACCOUNT_TOKEN)? {
         Some(bytes) if bytes.len() == 32 => {
@@ -151,41 +167,112 @@ pub fn ensure_identity(data_dir: &Path) -> Result<Identity, String> {
         _ => {
             let token = crypto::random::<32>();
             keychain_set(ACCOUNT_TOKEN, &token)?;
-            changed = true;
             token
         }
     };
-
     if changed {
         save_settings(data_dir, &settings)?;
     }
-
-    let mac_ed_public = {
-        use ed25519_dalek::SigningKey;
-        SigningKey::from_bytes(&mac_ed_seed)
-            .verifying_key()
-            .to_bytes()
-    };
     Ok(Identity {
         device_id: settings.device_id,
-        room: settings.room,
+        room: crypto::hex_encode(&crypto::derive_room(&remote_key)),
+        psk: crypto::derive_psk(&remote_key),
         host_token,
-        mac_ed_seed,
-        mac_ed_public,
-        mac_x_secret,
-        mac_x_public: crypto::x25519_public(&mac_x_secret),
+        remote_key,
     })
 }
 
-/// New room id + host token. Pairing records keep working; a paired phone
-/// reconnects with its stored room, so the caller must re-pair every device.
-pub fn rotate_room(data_dir: &Path) -> Result<(String, [u8; 32]), String> {
-    let mut settings = load_settings(data_dir);
-    settings.room = crypto::hex_encode(&crypto::random::<16>());
-    save_settings(data_dir, &settings)?;
-    let token = crypto::random::<32>();
-    keychain_set(ACCOUNT_TOKEN, &token)?;
-    Ok((settings.room, token))
+pub fn has_key() -> bool {
+    matches!(keychain_get(ACCOUNT_KEY), Ok(Some(bytes)) if bytes.len() == 32)
+}
+
+/// Creates a key when none exists. Returns the hex key so the caller can show
+/// it exactly once.
+pub fn generate_key() -> Result<[u8; 32], String> {
+    if has_key() {
+        return Err("KEY_EXISTS: 远程密钥已存在，如需更换请轮换".into());
+    }
+    let key = crypto::random::<32>();
+    keychain_set(ACCOUNT_KEY, &key)?;
+    keychain_set(ACCOUNT_TOKEN, &crypto::random::<32>())?;
+    Ok(key)
+}
+
+/// New key and host token. The room changes with the key, so every phone
+/// loses access immediately and must be given the new key.
+pub fn rotate_key() -> Result<[u8; 32], String> {
+    let key = crypto::random::<32>();
+    keychain_set(ACCOUNT_KEY, &key)?;
+    keychain_set(ACCOUNT_TOKEN, &crypto::random::<32>())?;
+    Ok(key)
+}
+
+pub fn reveal_key() -> Result<[u8; 32], String> {
+    match keychain_get(ACCOUNT_KEY)? {
+        Some(bytes) if bytes.len() == 32 => {
+            let mut key = [0u8; 32];
+            key.copy_from_slice(&bytes);
+            Ok(key)
+        }
+        _ => Err("NO_KEY: 还没有远程密钥".into()),
+    }
+}
+
+pub fn key_suffix() -> Option<String> {
+    let key = reveal_key().ok()?;
+    let hex = crypto::hex_encode(&key);
+    Some(hex[hex.len() - 4..].to_string())
+}
+
+/// Normalizes a service base URL. The same rules run on iOS; see
+/// `protocol/v2.md` §8.1.
+pub fn normalize_base_url(raw: &str) -> Result<String, String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err("BAD_PARAMS: 服务地址不能为空".into());
+    }
+    if trimmed.contains('?') || trimmed.contains('#') {
+        return Err("BAD_PARAMS: 服务地址不能带查询参数或片段".into());
+    }
+    let (scheme, rest) = if let Some(rest) = trimmed.strip_prefix("https://") {
+        ("https", rest)
+    } else if let Some(rest) = trimmed.strip_prefix("http://") {
+        ("http", rest)
+    } else {
+        return Err("BAD_PARAMS: 服务地址必须以 https:// 开头".into());
+    };
+    let (authority, path) = match rest.split_once('/') {
+        Some((authority, path)) => (authority, format!("/{path}")),
+        None => (rest, String::new()),
+    };
+    if authority.is_empty() || authority.contains('@') || authority.contains(char::is_whitespace) {
+        return Err("BAD_PARAMS: 服务地址的主机名不合法".into());
+    }
+    let host = authority.split(':').next().unwrap_or("");
+    if scheme == "http" && host != "localhost" && host != "127.0.0.1" {
+        return Err("BAD_PARAMS: 只有 localhost 允许使用 http://".into());
+    }
+    let path = path.trim_end_matches('/').to_string();
+    if path.ends_with("/todo") || path.ends_with("/relay") {
+        return Err("BAD_PARAMS: 服务地址只填到前缀，不要带 /todo 或 /relay".into());
+    }
+    Ok(format!("{scheme}://{authority}{path}"))
+}
+
+pub fn todo_url(base_url: &str) -> String {
+    format!("{base_url}/todo")
+}
+
+pub fn relay_url(base_url: &str) -> Result<String, String> {
+    let rest = base_url
+        .strip_prefix("https://")
+        .or_else(|| base_url.strip_prefix("http://"))
+        .ok_or("BAD_PARAMS: 服务地址缺少 scheme")?;
+    let (authority, path) = match rest.split_once('/') {
+        Some((authority, path)) => (authority, format!("/{path}")),
+        None => (rest, String::new()),
+    };
+    Ok(format!("wss://{authority}{path}/relay/ws"))
 }
 
 pub fn save_allowed_projects(
@@ -245,6 +332,10 @@ fn keychain_get(account: &str) -> Result<Option<Vec<u8>>, String> {
     }
 }
 
+fn keychain_delete(account: &str) {
+    let _ = security_framework::passwords::delete_generic_password(KEYCHAIN_SERVICE, account);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -263,19 +354,86 @@ mod tests {
     fn settings_round_trip_and_defaults() {
         let dir = temp_dir("roundtrip");
         let defaults = load_settings(&dir);
-        assert_eq!(defaults.relay_url, DEFAULT_RELAY);
+        assert_eq!(defaults.base_url, DEFAULT_BASE_URL);
+        assert_eq!(defaults.version, SETTINGS_VERSION);
         assert!(!defaults.enabled);
 
         let saved = RemoteSettings {
             enabled: true,
-            room: "00".repeat(16),
             device_id: "11".repeat(16),
             ..defaults
         };
         save_settings(&dir, &saved).expect("save");
         let back = load_settings(&dir);
         assert!(back.enabled);
-        assert_eq!(back.room, "00".repeat(16));
+        assert_eq!(back.device_id, "11".repeat(16));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn base_url_normalization() {
+        assert_eq!(
+            normalize_base_url(" https://realbaike.tech/bnote/ ").unwrap(),
+            "https://realbaike.tech/bnote"
+        );
+        assert_eq!(
+            normalize_base_url("https://realbaike.tech").unwrap(),
+            "https://realbaike.tech"
+        );
+        assert_eq!(
+            normalize_base_url("http://localhost:8092/bnote").unwrap(),
+            "http://localhost:8092/bnote"
+        );
+        for bad in [
+            "",
+            "realbaike.tech/bnote",
+            "ftp://x",
+            "http://realbaike.tech/bnote",
+            "https://user@realbaike.tech/bnote",
+            "https://realbaike.tech/bnote?x=1",
+            "https://realbaike.tech/bnote#x",
+            "https://realbaike.tech/bnote/todo",
+            "https://realbaike.tech/bnote/relay",
+        ] {
+            assert!(normalize_base_url(bad).is_err(), "accepted {bad}");
+        }
+    }
+
+    #[test]
+    fn derived_endpoints() {
+        let base = DEFAULT_BASE_URL;
+        assert_eq!(
+            todo_url(base),
+            "https://realbaike.tech/bnote/todo".to_string()
+        );
+        assert_eq!(
+            relay_url(base).unwrap(),
+            "wss://realbaike.tech/bnote/relay/ws"
+        );
+        assert_eq!(
+            relay_url("http://localhost:8092").unwrap(),
+            "wss://localhost:8092/relay/ws"
+        );
+    }
+
+    #[test]
+    fn migration_resets_legacy_settings_once() {
+        let dir = temp_dir("migrate");
+        std::fs::create_dir_all(remote_dir(&dir)).expect("remote dir");
+        std::fs::write(
+            settings_file(&dir),
+            r#"{"enabled":true,"relayUrl":"wss://101.96.243.197/bnote-relay/ws","room":"00","deviceId":"11","allowedProjects":["/tmp/x"]}"#,
+        )
+        .unwrap();
+        assert!(migrate(&dir).expect("migrate"));
+        let after = load_settings(&dir);
+        assert_eq!(after.version, SETTINGS_VERSION);
+        assert!(!after.enabled);
+        assert_eq!(after.base_url, DEFAULT_BASE_URL);
+        assert_eq!(after.allowed_projects, vec!["/tmp/x".to_string()]);
+        assert_ne!(after.device_id, "11");
+        // Idempotent.
+        assert!(!migrate(&dir).expect("second migrate"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -297,10 +455,5 @@ mod tests {
         // A path, not an id, is never accepted.
         assert!(allowed_project(&dir, &project.to_string_lossy()).is_none());
         let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn certificate_is_present() {
-        assert!(ROOT_CERT_PEM.starts_with(b"-----BEGIN CERTIFICATE-----"));
     }
 }

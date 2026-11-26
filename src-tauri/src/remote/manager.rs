@@ -12,8 +12,7 @@ use std::time::Instant;
 use serde_json::{json, Value};
 use tauri::Manager;
 
-use super::client::{ClientHandle, Control, RemoteEvents};
-use super::pairing::{self, PairingOffer};
+use super::client::{ClientHandle, Connection, Control, RemoteEvents};
 use super::settings::{self, Identity};
 use super::{audit, Origin};
 
@@ -21,7 +20,6 @@ use super::{audit, Origin};
 pub struct RemoteManager {
     inner: Mutex<Inner>,
     checkpoints: Mutex<std::collections::HashMap<String, super::checkpoint::Checkpoint>>,
-    offer: Arc<Mutex<Option<PairingOffer>>>,
     enabled: Arc<AtomicBool>,
     status: Arc<Mutex<Status>>,
 }
@@ -30,6 +28,7 @@ pub struct RemoteManager {
 struct Inner {
     task: Option<tauri::async_runtime::JoinHandle<()>>,
     control: Option<tokio::sync::mpsc::UnboundedSender<Control>>,
+    handle: Option<ClientHandle>,
 }
 
 #[derive(Clone, Default)]
@@ -45,13 +44,19 @@ impl RemoteManager {
 
     pub fn status(&self) -> Value {
         let status = self.status.lock().map(|g| g.clone()).unwrap_or_default();
-        let offer = self.offer.lock().ok().and_then(|g| g.clone());
         json!({
             "enabled": self.is_enabled(),
             "status": if self.is_enabled() { status.state } else { "disabled".into() },
             "lastError": status.last_error,
-            "pairingExpiresAt": offer.map(|o| o.expires_at),
         })
+    }
+
+    pub fn connections(&self) -> Vec<Connection> {
+        self.inner
+            .lock()
+            .ok()
+            .and_then(|inner| inner.handle.as_ref().map(|handle| handle.connections()))
+            .unwrap_or_default()
     }
 
     pub async fn enable(&self, app: tauri::AppHandle) -> Result<(), String> {
@@ -63,14 +68,19 @@ impl RemoteManager {
             tauri::async_runtime::spawn_blocking(move || settings::ensure_identity(&data_dir))
                 .await
                 .map_err(|e| format!("JOIN_FAILED: {e}"))??;
-        let settings = settings::load_settings(&app.state::<crate::state::AppState>().data_dir());
+        let data_dir = app.state::<crate::state::AppState>().data_dir();
+        let settings = settings::load_settings(&data_dir);
+        let base_url = if settings.base_url.trim().is_empty() {
+            settings::DEFAULT_BASE_URL.to_string()
+        } else {
+            settings.base_url.clone()
+        };
 
         let (handle, mut outgoing, mut control) = ClientHandle::new(app.clone());
+        let task_handle = handle.clone();
         let status = self.status.clone();
-        let offer = self.offer.clone();
         let enabled = self.enabled.clone();
         let control_tx = handle.control.clone();
-        let data_dir = app.state::<crate::state::AppState>().data_dir();
         let task_dir = data_dir.clone();
 
         self.enabled.store(true, Ordering::SeqCst);
@@ -80,22 +90,16 @@ impl RemoteManager {
                 last_error: None,
             };
         }
-        let relay = if settings.relay_url.trim().is_empty() {
-            settings::DEFAULT_RELAY.to_string()
-        } else {
-            settings.relay_url.clone()
-        };
 
         let task = tauri::async_runtime::spawn(async move {
             let mut backoff = 500u64;
             while enabled.load(Ordering::SeqCst) {
                 let started = Instant::now();
                 let result = super::client::connect_loop(
-                    &relay,
+                    &base_url,
                     &identity,
                     &task_dir,
-                    offer.clone(),
-                    &handle,
+                    &task_handle,
                     &mut control,
                     &mut outgoing,
                 )
@@ -105,7 +109,7 @@ impl RemoteManager {
                         s.state = "offline".into();
                         s.last_error = Some(e.clone());
                     }
-                    handle.app.emit_remote_event(json!({
+                    task_handle.app.emit_remote_event(json!({
                         "type": "status",
                         "status": "offline",
                         "error": e,
@@ -144,74 +148,41 @@ impl RemoteManager {
         if let Ok(mut inner) = self.inner.lock() {
             inner.task = Some(task);
             inner.control = Some(control_tx);
+            inner.handle = Some(handle);
         }
-        audit::append(&data_dir, "system", "pair", "remote access enabled");
+        audit::append(&data_dir, "system", "key", "remote access enabled");
         Ok(())
     }
 
     pub fn disable(&self, app: &tauri::AppHandle) {
         self.enabled.store(false, Ordering::SeqCst);
-        if let Ok(inner) = self.inner.lock() {
+        if let Ok(mut inner) = self.inner.lock() {
             if let Some(control) = &inner.control {
                 let _ = control.send(Control::Stop);
             }
+            inner.task = None;
+            inner.control = None;
+            inner.handle = None;
         }
         if let Ok(mut status) = self.status.lock() {
             status.state = "disabled".into();
             status.last_error = None;
         }
         let data_dir = app.state::<crate::state::AppState>().data_dir();
-        audit::append(&data_dir, "system", "pair", "remote access disabled");
+        audit::append(&data_dir, "system", "key", "remote access disabled");
     }
 
-    pub fn begin_pairing(&self, app: &tauri::AppHandle) -> Result<(String, u64, String), String> {
-        if !self.is_enabled() {
-            return Err("REMOTE_DISABLED: 先启用远程访问".into());
+    /// Stops the task, then starts a new one with the current settings. Used
+    /// after the base URL changes or the key is rotated.
+    pub async fn restart(&self, app: tauri::AppHandle) -> Result<(), String> {
+        let was_enabled = self.is_enabled();
+        if was_enabled {
+            self.disable(&app);
         }
-        let data_dir = app.state::<crate::state::AppState>().data_dir();
-        let settings = settings::load_settings(&data_dir);
-        let identity = settings::ensure_identity(&data_dir)?;
-        let relay = if settings.relay_url.trim().is_empty() {
-            settings::DEFAULT_RELAY
-        } else {
-            &settings.relay_url
-        };
-        let offer = pairing::new_offer(&identity, relay);
-        let payload = offer.payload.clone();
-        let expires = offer.expires_at;
-        let room = offer.room.clone();
-        *self.offer.lock().map_err(|_| "LOCK_FAILED")? = Some(offer);
-        audit::append(&data_dir, "system", "pair", "pairing QR generated");
-        Ok((payload, expires, room))
-    }
-
-    pub fn cancel_pairing(&self) {
-        if let Ok(mut offer) = self.offer.lock() {
-            *offer = None;
+        if was_enabled {
+            self.enable(app).await?;
         }
-    }
-
-    pub fn approve(&self, device_id: &str, allow: bool) -> Result<(), String> {
-        let inner = self.inner.lock().map_err(|_| "LOCK_FAILED")?;
-        inner
-            .control
-            .as_ref()
-            .ok_or("REMOTE_DISABLED: 连接未启动")?
-            .send(Control::Approve {
-                device_id: device_id.to_string(),
-                allow,
-            })
-            .map_err(|_| "REMOTE_DISABLED: 连接已停止".to_string())
-    }
-
-    pub fn revoke(&self, device_id: &str) {
-        if let Ok(inner) = self.inner.lock() {
-            if let Some(control) = &inner.control {
-                let _ = control.send(Control::Revoke {
-                    device_id: device_id.to_string(),
-                });
-            }
-        }
+        Ok(())
     }
 
     pub fn send_to_device(&self, device_id: &str, text: String) -> Result<(), String> {
@@ -244,11 +215,6 @@ impl RemoteManager {
             .ok()
             .and_then(|map| map.get(live_id).cloned())
     }
-}
-
-/// The public JSON the settings page and the phone's device list share.
-pub fn device_list(data_dir: &std::path::Path) -> Value {
-    json!(pairing::load_devices(data_dir))
 }
 
 /// Origin of one live session, for `agent_live_sessions`.

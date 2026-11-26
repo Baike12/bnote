@@ -1,7 +1,7 @@
 //! Remote access: the outbound WebSocket channel from the Mac to the relay, the
 //! end-to-end crypto around it, and the RPC surface the iPhone drives.
 //!
-//! The wire contract is `bnote-mobile/protocol/v1.md`. Nothing here is exposed
+//! The wire contract is `bnote-mobile/protocol/v2.md`. Nothing here is exposed
 //! to the local frontend except through the thin commands in
 //! `commands/remote.rs`.
 
@@ -11,8 +11,8 @@ pub mod client;
 pub mod crypto;
 pub mod events;
 pub mod frame;
+pub mod keys;
 pub mod manager;
-pub mod pairing;
 pub mod recorder;
 pub mod rpc;
 pub mod settings;

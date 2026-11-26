@@ -605,33 +605,28 @@ async fn dispatch(app: &AppHandle, cmd: &str, args: &Value) -> Result<Value, Str
             arg_str(args, "transcriptId")?
         )),
         "remote_status" => json_ok!(remote::remote_status(app.state(), app.state())),
-        "remote_set_enabled" => {
-            let relay = optional_str(args, "relayUrl");
-            json_ok!(remote::remote_set_enabled(
-                app.clone(),
-                app.state(),
-                app.state(),
-                arg_bool(args, "enabled")?,
-                relay
-            )
-            .await)
-        }
-        "remote_pairing_begin" => json_ok!(remote::remote_pairing_begin(
+        "remote_set_enabled" => json_ok!(remote::remote_set_enabled(
             app.clone(),
+            app.state(),
+            app.state(),
+            arg_bool(args, "enabled")?
+        )
+        .await),
+        "remote_set_base_url" => json_ok!(remote::remote_set_base_url(
+            app.clone(),
+            app.state(),
+            app.state(),
+            arg_str(args, "baseUrl")?
+        )
+        .await),
+        "remote_key_generate" => json_ok!(remote::remote_key_generate(app.state())),
+        "remote_key_reveal" => json_ok!(remote::remote_key_reveal()),
+        "remote_key_rotate" => json_ok!(remote::remote_key_rotate(
+            app.clone(),
+            app.state(),
             app.state()
-        )),
-        "remote_pairing_cancel" => json_ok!(remote::remote_pairing_cancel(app.state())),
-        "remote_pair_approve" => json_ok!(remote::remote_pair_approve(
-            app.state(),
-            arg_str(args, "deviceId")?,
-            arg_bool(args, "allow")?
-        )),
-        "remote_devices" => json_ok!(remote::remote_devices(app.state())),
-        "remote_revoke_device" => json_ok!(remote::remote_revoke_device(
-            app.state(),
-            app.state(),
-            arg_str(args, "deviceId")?
-        )),
+        )
+        .await),
         "remote_audit_tail" => json_ok!(remote::remote_audit_tail(
             app.state(),
             arg_opt_u64(args, "limit").map(|n| n as usize)
@@ -640,13 +635,6 @@ async fn dispatch(app: &AppHandle, cmd: &str, args: &Value) -> Result<Value, Str
             app.state(),
             serde_json::from_value(arg_value(args, "projects")?)
                 .map_err(|e| format!("BAD_ARGS: projects: {}", e))?
-        )),
-        "remote_todo_config" => json_ok!(remote::remote_todo_config(
-            app.state(),
-            app.state(),
-            arg_str(args, "deviceId")?,
-            arg_str(args, "server")?,
-            arg_str(args, "key")?
         )),
         "agent_set_current_note" => json_ok!(agent::agent_set_current_note(
             app.state(),

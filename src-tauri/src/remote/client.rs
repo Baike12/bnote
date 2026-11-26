@@ -1,22 +1,27 @@
-//! Outbound WSS connection to the relay, the pairing/reconnect handshake, and
-//! the per-device E2E state.
+//! Outbound WSS connection to the relay and the per-phone E2E handshake.
 //!
 //! The Mac never listens. The relay routes by room; this module authenticates
-//! the room as the host, then keeps one encrypted session per paired phone.
-//! All writes happen on the connection task, so per-device `seq` allocation
-//! and the socket are single-owner.
+//! the room as the host, then keeps one encrypted session per phone. All
+//! writes happen on the connection task, so per-device `seq` allocation and the
+//! socket are single-owner.
+//!
+//! Presence is relay-owned: the Mac ignores it. Phones re-handshake whenever
+//! the relay announces a new epoch (a new host attachment), so a stale key set
+//! is never reused after a reconnect.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use futures::{SinkExt, StreamExt};
+use serde::Serialize;
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
 use super::crypto::{self, Reassembler, ReplayWindow};
 use super::frame::{self, FrameType, RelayFrame};
-use super::pairing::{self, Device, PairingOffer, PairingSession};
+use super::keys::{self, HandshakeSession};
 use super::settings::{self, Identity};
 
 type Ws = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
@@ -35,9 +40,18 @@ pub enum Outgoing {
 #[derive(Debug)]
 pub enum Control {
     Stop,
-    Approve { device_id: String, allow: bool },
-    Revoke { device_id: String },
     Send { device_id: String, text: String },
+}
+
+/// One currently handshaken phone, surfaced read-only in the settings page.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Connection {
+    pub device_id: String,
+    pub name: String,
+    pub connected_at: u64,
+    pub last_seen_at: u64,
+    pub connected: bool,
 }
 
 #[derive(Clone)]
@@ -46,6 +60,7 @@ pub struct ClientHandle {
     pub control: mpsc::UnboundedSender<Control>,
     pub app: tauri::AppHandle,
     subscribed: Arc<Mutex<HashSet<String>>>,
+    connections: Arc<Mutex<Vec<Connection>>>,
 }
 
 impl ClientHandle {
@@ -64,6 +79,7 @@ impl ClientHandle {
                 control,
                 app,
                 subscribed: Arc::new(Mutex::new(HashSet::new())),
+                connections: Arc::new(Mutex::new(Vec::new())),
             },
             out_rx,
             control_rx,
@@ -84,43 +100,102 @@ impl ClientHandle {
             .map(|mut set| set.insert(key.to_string()))
             .unwrap_or(false)
     }
+
+    pub fn connections(&self) -> Vec<Connection> {
+        self.connections
+            .lock()
+            .map(|list| list.clone())
+            .unwrap_or_default()
+    }
+
+    fn upsert_connection(&self, device_id: &str, name: &str) {
+        let now = now_ms();
+        let mut changed = false;
+        if let Ok(mut list) = self.connections.lock() {
+            match list.iter_mut().find(|c| c.device_id == device_id) {
+                Some(entry) => {
+                    entry.name = name.to_string();
+                    entry.last_seen_at = now;
+                    entry.connected = true;
+                }
+                None => {
+                    list.push(Connection {
+                        device_id: device_id.to_string(),
+                        name: name.to_string(),
+                        connected_at: now,
+                        last_seen_at: now,
+                        connected: true,
+                    });
+                    changed = true;
+                }
+            }
+        }
+        if changed {
+            self.app
+                .emit_remote_event(serde_json::json!({"type":"status","status":"online"}));
+        }
+    }
+
+    fn touch_connection(&self, device_id: &str) {
+        if let Ok(mut list) = self.connections.lock() {
+            if let Some(entry) = list.iter_mut().find(|c| c.device_id == device_id) {
+                entry.last_seen_at = now_ms();
+            }
+        }
+    }
+
+    fn emit_status(&self, status: &str) {
+        self.app.emit_remote_event(serde_json::json!({
+            "type": "status",
+            "status": status,
+        }));
+    }
+
+    fn clear_connections(&self) {
+        let had = self
+            .connections
+            .lock()
+            .map(|mut list| {
+                let had = !list.is_empty();
+                list.clear();
+                had
+            })
+            .unwrap_or(false);
+        if had {
+            self.app
+                .emit_remote_event(serde_json::json!({"type":"status","status":"offline"}));
+        }
+    }
 }
 
 #[derive(Default)]
 struct DeviceConn {
-    t2h: Option<[u8; 32]>,
-    h2t: Option<[u8; 32]>,
+    name: String,
     established: bool,
     send_seq: u64,
     recv: ReplayWindow,
     reasm: Reassembler,
-    pairing: Option<PairingSession>,
-    auth: Option<pairing::AuthSession>,
-    pending: Option<Device>,
+    handshake: Option<HandshakeSession>,
+    keys: Option<crypto::HandshakeKeys>,
+    /// `hs_start` arrival times inside the current 10 s window.
+    attempts: Vec<Instant>,
 }
 
 /// One connection attempt. The manager owns the channels across attempts, so a
 /// reconnect keeps the event subscriptions and pending UI state.
 pub async fn connect_loop(
-    relay_url: &str,
+    base_url: &str,
     identity: &Identity,
     data_dir: &std::path::Path,
-    offer: Arc<Mutex<Option<PairingOffer>>>,
     handle: &ClientHandle,
     control: &mut mpsc::UnboundedReceiver<Control>,
     outgoing: &mut mpsc::UnboundedReceiver<Outgoing>,
 ) -> Result<(), String> {
-    let ws = tokio_tungstenite::connect_async_tls_with_config(
-        relay_url,
-        None,
-        false,
-        Some(tokio_tungstenite::Connector::Rustls(
-            Arc::new(tls_config()?),
-        )),
-    )
-    .await
-    .map_err(|e| format!("CONNECT_FAILED: {e}"))?
-    .0;
+    let relay_url = settings::relay_url(base_url)?;
+    // No custom connector: TLS is verified against the system trust store.
+    let (ws, _) = tokio_tungstenite::connect_async(&relay_url)
+        .await
+        .map_err(|e| format!("CONNECT_FAILED: {e}"))?;
     let (mut write, mut read) = ws.split();
 
     let hello = RelayFrame::hello_host(&identity.room, &identity.device_id, &identity.host_token);
@@ -154,46 +229,39 @@ pub async fn connect_loop(
         device_id: identity.device_id.clone(),
         identity,
         data_dir: data_dir.to_path_buf(),
-        offer,
         devices: HashMap::new(),
         handle: handle.clone(),
     };
-    conn.emit_status("online");
+    handle.emit_status("online");
 
-    loop {
+    let result = loop {
         tokio::select! {
             message = read.next() => {
                 match message {
                     Some(Ok(Message::Text(text))) => {
                         if let Err(e) = conn.on_frame(text.as_bytes(), &mut write).await {
-                            conn.handle.app.emit_remote_error(&e);
+                            handle.app.emit_remote_error(&e);
+                            break Err(e);
                         }
                     }
                     Some(Ok(Message::Ping(payload))) => {
                         let _ = write.send(Message::Pong(payload)).await;
                     }
-                    Some(Ok(Message::Close(_))) | None => return Ok(()),
-                    Some(Err(e)) => return Err(format!("SOCKET: {e}")),
+                    Some(Ok(Message::Close(_))) | None => break Ok(()),
+                    Some(Err(e)) => break Err(format!("SOCKET: {e}")),
                     _ => {}
                 }
             }
             Some(control) = control.recv() => {
                 match control {
-                    Control::Stop => return Ok(()),
-                    Control::Approve { device_id, allow } => {
-                        conn.approve(&device_id, allow, &mut write).await;
-                    }
-                    Control::Revoke { device_id } => {
-                        conn.devices.remove(&device_id);
-                        conn.emit_status("online");
-                    }
+                    Control::Stop => break Ok(()),
                     Control::Send { device_id, text } => {
                         let _ = conn.send_app(&device_id, &text, &mut write).await;
                     }
                 }
             }
-            Some(out) = outgoing.recv() => {
-                if let Outgoing::App { device, text } = out {
+            Some(Outgoing::App { device, text }) = outgoing.recv() => {
+                {
                     match device {
                         Some(id) => { let _ = conn.send_app(&id, &text, &mut write).await; }
                         None => {
@@ -211,7 +279,9 @@ pub async fn connect_loop(
                 }
             }
         }
-    }
+    };
+    handle.clear_connections();
+    result
 }
 
 struct Conn<'a> {
@@ -219,28 +289,8 @@ struct Conn<'a> {
     device_id: String,
     identity: &'a Identity,
     data_dir: std::path::PathBuf,
-    offer: Arc<Mutex<Option<PairingOffer>>>,
     devices: HashMap<String, DeviceConn>,
     handle: ClientHandle,
-}
-
-/// The b-todo credentials the phone should receive after pairing. They live in
-/// the desktop config; `http://` is upgraded to `https://` because the phone
-/// refuses plaintext and the 443 endpoint serves the same server.
-fn todo_config_from_disk(data_dir: &std::path::Path) -> Option<(String, String)> {
-    let raw = std::fs::read_to_string(data_dir.join("config.json")).ok()?;
-    let value: serde_json::Value = serde_json::from_str(&raw).ok()?;
-    let sync = value.get("settings")?.get("daily")?.get("sync")?;
-    let server = sync.get("server")?.as_str()?.trim();
-    let key = sync.get("key")?.as_str()?.trim();
-    if server.is_empty() || key.is_empty() {
-        return None;
-    }
-    let server = match server.strip_prefix("http://") {
-        Some(rest) => format!("https://{rest}"),
-        None => server.to_string(),
-    };
-    Some((server, key.to_string()))
 }
 
 impl Conn<'_> {
@@ -250,6 +300,9 @@ impl Conn<'_> {
             FrameType::Ping => self.send_frame(RelayFrame::pong(), write).await,
             FrameType::Pong => Ok(()),
             FrameType::Error => Err(format!("RELAY_ERROR: {} {}", f.code, f.message)),
+            // Presence is relay-owned and tells phones whether a host socket
+            // exists; the host is the one being announced, so it ignores it.
+            FrameType::Presence => Ok(()),
             FrameType::Data => {
                 let device = f.device.clone();
                 if f.msg_id.is_empty() {
@@ -280,56 +333,179 @@ impl Conn<'_> {
         message: &[u8],
         write: &mut Write,
     ) -> Result<(), String> {
-        let has_keys = self
+        // A plaintext hs_start always starts a fresh handshake, even when the
+        // device is established: that is how the phone reacts to a new epoch.
+        if let Ok(value) = serde_json::from_slice::<serde_json::Value>(message) {
+            if value.get("t").and_then(|v| v.as_str()) == Some("hs_start") {
+                return self.start_handshake(device, &value, write).await;
+            }
+        }
+
+        let established = self
             .devices
             .get(device)
-            .map(|d| d.t2h.is_some())
+            .map(|d| d.established)
+            .unwrap_or(false);
+        let handshaking = self
+            .devices
+            .get(device)
+            .map(|d| d.handshake.is_some())
             .unwrap_or(false);
 
-        if !has_keys {
-            let value: serde_json::Value = serde_json::from_slice(message)
-                .map_err(|_| "BAD_FRAME: handshake is not JSON".to_string())?;
-            let kind = value.get("t").and_then(|v| v.as_str()).unwrap_or("");
-            return match kind {
-                "pair_request" => self.on_pair_request(device, &value, write).await,
-                "auth_request" => self.on_auth_request(device, &value, write).await,
-                _ => Err(format!("BAD_FRAME: unexpected handshake {kind}")),
+        if established {
+            let keys = self
+                .devices
+                .get(device)
+                .and_then(|d| d.keys)
+                .ok_or("BAD_FRAME: no key")?;
+            if seq < 2 {
+                return Ok(());
+            }
+            let state = self
+                .devices
+                .get_mut(device)
+                .ok_or("BAD_FRAME: unknown device")?;
+            if !state.recv.accept(seq) {
+                return Ok(()); // duplicate or outside the window
+            }
+            let plaintext = match crypto::open(&keys.t2h, &self.room, "terminal", seq, message) {
+                Ok(plain) => plain,
+                Err(e) => return Err(format!("E2E_FAILED: {e}")),
             };
+            self.handle.touch_connection(device);
+            return self.dispatch_rpc(device, &plaintext);
         }
 
-        let state = self
-            .devices
-            .get(device)
-            .ok_or("BAD_FRAME: unknown device")?;
-        let t2h = state.t2h.ok_or("BAD_FRAME: no key")?;
-        let plaintext = crypto::open(&t2h, &self.room, "terminal", seq, message)
-            .map_err(|e| format!("E2E_FAILED: {e}"))?;
-
-        if state.pairing.is_some() {
+        if handshaking {
             if seq != 1 {
-                return Err("BAD_FRAME: pair_confirm seq must be 1".into());
+                self.reject_handshake(device, "BAD_FRAME", "hs_confirm seq must be 1", write)
+                    .await;
+                return Ok(());
             }
-            return self.finish_pair(device, &plaintext, write).await;
-        }
-        if state.auth.is_some() {
-            if seq != 1 {
-                return Err("BAD_FRAME: auth_confirm seq must be 1".into());
+            let Some(session) = self
+                .devices
+                .get_mut(device)
+                .and_then(|state| state.handshake.take())
+            else {
+                return Ok(());
+            };
+            let plaintext =
+                match crypto::open(&session.keys.t2h, &self.room, "terminal", seq, message) {
+                    Ok(plain) => plain,
+                    Err(_) => {
+                        self.reject_handshake(device, "BAD_FRAME", "hs_confirm", write)
+                            .await;
+                        return Ok(());
+                    }
+                };
+            if let Err(code) = keys::verify_confirm(&session, &plaintext) {
+                let message = if code == "AUTH_FAILED" {
+                    "remote key mismatch"
+                } else {
+                    "invalid hs_confirm"
+                };
+                self.reject_handshake(device, &code, message, write).await;
+                return Ok(());
             }
-            return self.finish_auth(device, &plaintext, write).await;
-        }
-        if !state.established {
-            return Err("BAD_FRAME: encrypted message before handshake".into());
+            self.send_plain(device, &keys::hs_ok(), write).await?;
+            let name = display_name(&session.name);
+            if let Some(state) = self.devices.get_mut(device) {
+                state.established = true;
+                state.send_seq = 2;
+                state.keys = Some(session.keys);
+                state.name = name.clone();
+            }
+            self.handle.upsert_connection(device, &name);
+            super::audit::append(
+                &self.data_dir,
+                device,
+                "connect",
+                &format!("{name} connected over the relay"),
+            );
+            self.emit_status("online");
+            return Ok(());
         }
 
-        let state = self
-            .devices
-            .get_mut(device)
-            .ok_or("BAD_FRAME: unknown device")?;
-        if !state.recv.accept(seq) {
-            return Ok(()); // duplicate or outside the window
+        Ok(())
+    }
+
+    async fn start_handshake(
+        &mut self,
+        device: &str,
+        value: &serde_json::Value,
+        write: &mut Write,
+    ) -> Result<(), String> {
+        let now = Instant::now();
+        let limited = {
+            let state = self.devices.entry(device.to_string()).or_default();
+            state.established = false;
+            state.handshake = None;
+            state.keys = None;
+            state.recv = ReplayWindow::default();
+            state.send_seq = 0;
+            state
+                .attempts
+                .retain(|at| now.duration_since(*at) < Duration::from_secs(10));
+            let limited = state.attempts.len() >= 5;
+            if !limited {
+                state.attempts.push(now);
+            }
+            limited
+        };
+        if limited {
+            return self
+                .send_plain(
+                    device,
+                    &keys::hs_error("RATE_LIMITED", "too many handshake attempts"),
+                    write,
+                )
+                .await;
         }
+
+        let (name, eph) = match keys::parse_start(value) {
+            Ok(parsed) => parsed,
+            Err(e) => {
+                self.reject_handshake(device, "BAD_FRAME", &e, write).await;
+                return Ok(());
+            }
+        };
+        match keys::start(self.identity, device, &name, &eph) {
+            Ok(session) => {
+                let reply = keys::reply(&session);
+                if let Some(state) = self.devices.get_mut(device) {
+                    state.handshake = Some(session);
+                }
+                self.send_plain(device, &reply, write).await
+            }
+            Err(e) => {
+                self.reject_handshake(device, "BAD_FRAME", &e, write).await;
+                Ok(())
+            }
+        }
+    }
+
+    /// Drops the handshake and tells the phone why. The Mac never closes the
+    /// relay socket here: it carries every phone.
+    async fn reject_handshake(
+        &mut self,
+        device: &str,
+        code: &str,
+        message: &str,
+        write: &mut Write,
+    ) {
+        if let Some(state) = self.devices.get_mut(device) {
+            state.handshake = None;
+            state.established = false;
+            state.keys = None;
+        }
+        let _ = self
+            .send_plain(device, &keys::hs_error(code, message), write)
+            .await;
+    }
+
+    fn dispatch_rpc(&self, device: &str, plaintext: &[u8]) -> Result<(), String> {
         let value: serde_json::Value =
-            serde_json::from_slice(&plaintext).map_err(|_| "BAD_FRAME: app JSON".to_string())?;
+            serde_json::from_slice(plaintext).map_err(|_| "BAD_FRAME: app JSON".to_string())?;
         if value.get("t").and_then(|v| v.as_str()) != Some("rpc") {
             return Err("BAD_FRAME: expected rpc".into());
         }
@@ -363,207 +539,6 @@ impl Conn<'_> {
             handle.send_app(Some(device), response);
         });
         Ok(())
-    }
-
-    async fn on_pair_request(
-        &mut self,
-        device: &str,
-        value: &serde_json::Value,
-        write: &mut Write,
-    ) -> Result<(), String> {
-        let active = {
-            let offer = self.offer.lock().unwrap_or_else(|e| e.into_inner());
-            match offer.as_ref() {
-                Some(o) if !o.consumed && o.expires_at > now_ms() && o.room == self.room => {
-                    Some(o.clone())
-                }
-                _ => None,
-            }
-        };
-        let Some(_offer) = active else {
-            return self
-                .send_plain(
-                    device,
-                    &pairing::hs_error("PAIR_CLOSED", "no active QR"),
-                    write,
-                )
-                .await;
-        };
-        let eph = value
-            .get("eph")
-            .and_then(|v| v.as_str())
-            .ok_or("BAD_PARAMS: eph")?;
-        let eph = crypto::hex32(eph).map_err(|e| e.to_string())?;
-        let session = pairing::start_pairing(self.identity, device, &eph)?;
-        let response = session.response.clone();
-        let state = self.devices.entry(device.to_string()).or_default();
-        state.pairing = Some(session);
-        state.t2h = state.pairing.as_ref().map(|s| s.t2h);
-        state.h2t = state.pairing.as_ref().map(|s| s.h2t);
-        self.send_plain(device, &response, write).await
-    }
-
-    async fn finish_pair(
-        &mut self,
-        device: &str,
-        plaintext: &[u8],
-        write: &mut Write,
-    ) -> Result<(), String> {
-        let code = {
-            let offer = self.offer.lock().unwrap_or_else(|e| e.into_inner());
-            offer.as_ref().map(|o| o.code)
-        };
-        let Some(code) = code else {
-            return self
-                .send_plain(
-                    device,
-                    &pairing::hs_error("PAIR_CLOSED", "no active QR"),
-                    write,
-                )
-                .await;
-        };
-        let state = self
-            .devices
-            .get_mut(device)
-            .ok_or("BAD_FRAME: unknown device")?;
-        let session = state.pairing.as_ref().ok_or("BAD_FRAME: no pairing")?;
-        let record = match pairing::finish_pairing(session, &code, plaintext) {
-            Ok(record) => record,
-            Err(e) => {
-                let code = if e == "PAIR_CODE_INVALID" {
-                    "PAIR_CODE_INVALID"
-                } else {
-                    "BAD_FRAME"
-                };
-                return self
-                    .send_plain(device, &pairing::hs_error(code, &e), write)
-                    .await;
-            }
-        };
-        // The one-time code is spent once a valid confirm arrives, before the
-        // desktop prompt: a second phone cannot reuse it while the user thinks.
-        if let Ok(mut offer) = self.offer.lock() {
-            if let Some(o) = offer.as_mut() {
-                o.consumed = true;
-            }
-        }
-        state.pending = Some(record.clone());
-        self.handle.app.emit_remote_event(serde_json::json!({
-            "type": "pairing_request",
-            "deviceId": record.device_id,
-            "name": record.name,
-        }));
-        Ok(())
-    }
-
-    async fn on_auth_request(
-        &mut self,
-        device: &str,
-        value: &serde_json::Value,
-        write: &mut Write,
-    ) -> Result<(), String> {
-        let Some(record) = pairing::find_device(&self.data_dir, device) else {
-            return self
-                .send_plain(
-                    device,
-                    &pairing::hs_error("DEVICE_UNKNOWN", "pair this phone first"),
-                    write,
-                )
-                .await;
-        };
-        if record.revoked {
-            return self
-                .send_plain(
-                    device,
-                    &pairing::hs_error("DEVICE_REVOKED", "device revoked"),
-                    write,
-                )
-                .await;
-        }
-        let eph = value
-            .get("eph")
-            .and_then(|v| v.as_str())
-            .ok_or("BAD_PARAMS: eph")?;
-        let eph = crypto::hex32(eph).map_err(|e| e.to_string())?;
-        let session = pairing::start_auth(self.identity, &record, &eph)?;
-        let response = session.response.clone();
-        let state = self.devices.entry(device.to_string()).or_default();
-        state.auth = Some(session);
-        state.t2h = state.auth.as_ref().map(|a| a.t2h);
-        state.h2t = state.auth.as_ref().map(|a| a.h2t);
-        self.send_plain(device, &response, write).await
-    }
-
-    async fn finish_auth(
-        &mut self,
-        device: &str,
-        plaintext: &[u8],
-        write: &mut Write,
-    ) -> Result<(), String> {
-        let value: serde_json::Value =
-            serde_json::from_slice(plaintext).map_err(|_| "BAD_FRAME: auth_confirm".to_string())?;
-        if value.get("t").and_then(|v| v.as_str()) != Some("auth_confirm") {
-            return Err("BAD_FRAME: expected auth_confirm".into());
-        }
-        let key = self
-            .devices
-            .get(device)
-            .and_then(|state| state.h2t)
-            .ok_or("BAD_FRAME: no key")?;
-        self.send_sealed(device, &key, 1, "{\"t\":\"auth_ok\"}", write)
-            .await?;
-        if let Some(state) = self.devices.get_mut(device) {
-            state.established = true;
-            state.send_seq = 2;
-            state.auth = None;
-        }
-        pairing::touch_device(&self.data_dir, device);
-        self.emit_status("online");
-        Ok(())
-    }
-
-    async fn approve(&mut self, device: &str, allow: bool, write: &mut Write) {
-        let (h2t, pending) = {
-            let Some(state) = self.devices.get_mut(device) else {
-                return;
-            };
-            let (Some(h2t), Some(_)) = (state.h2t, state.t2h) else {
-                return;
-            };
-            (h2t, state.pending.take())
-        };
-        if allow {
-            if let Some(record) = pending {
-                let _ = pairing::upsert_device(&self.data_dir, record);
-            }
-            let body = pairing::pair_ok(device);
-            let _ = self.send_sealed(device, &h2t, 1, &body, write).await;
-            if let Some(state) = self.devices.get_mut(device) {
-                state.established = true;
-                state.send_seq = 2;
-                state.pairing = None;
-            }
-            // The phone configures b-todo without the user retyping the key.
-            if let Some((server, key)) = todo_config_from_disk(&self.data_dir) {
-                let body = serde_json::json!({
-                    "t": "rpc",
-                    "id": crypto::hex_encode(&crypto::random::<16>()),
-                    "method": "todo.config",
-                    "params": { "server": server, "key": key },
-                })
-                .to_string();
-                let _ = self.send_app(device, &body, write).await;
-            }
-            self.handle.app.emit_remote_event(serde_json::json!({
-                "type": "device_paired",
-                "deviceId": device,
-            }));
-        } else {
-            let body = serde_json::json!({"t":"pair_denied","reason":"user"}).to_string();
-            let _ = self.send_sealed(device, &h2t, 1, &body, write).await;
-            self.devices.remove(device);
-        }
-        self.emit_status("online");
     }
 
     async fn send_plain(&self, _device: &str, body: &str, write: &mut Write) -> Result<(), String> {
@@ -608,11 +583,11 @@ impl Conn<'_> {
             if !state.established {
                 return Ok(());
             }
-            let Some(key) = state.h2t else {
+            let Some(keys) = state.keys else {
                 return Ok(());
             };
             state.send_seq += 1;
-            (key, state.send_seq)
+            (keys.h2t, state.send_seq)
         };
         self.send_sealed(device, &key, seq, body, write).await
     }
@@ -634,25 +609,16 @@ impl Conn<'_> {
     }
 }
 
-fn tls_config() -> Result<rustls::ClientConfig, String> {
-    let mut roots = rustls::RootCertStore::empty();
-    let certs = rustls_pemfile::certs(&mut &settings::ROOT_CERT_PEM[..])
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| format!("TLS_PIN: {e}"))?;
-    if certs.is_empty() {
-        return Err("TLS_PIN: bundled certificate is empty".into());
+/// The phone name is a self-reported label, never an identity. Trim it for
+/// display without touching the bytes that fed the transcript.
+fn display_name(raw: &str) -> String {
+    let trimmed = raw.trim();
+    let clipped: String = trimmed.chars().take(64).collect();
+    if clipped.is_empty() {
+        "iPhone".into()
+    } else {
+        clipped
     }
-    for cert in certs {
-        roots.add(cert).map_err(|e| format!("TLS_PIN: {e}"))?;
-    }
-    let provider = rustls::crypto::aws_lc_rs::default_provider();
-    Ok(
-        rustls::ClientConfig::builder_with_provider(Arc::new(provider))
-            .with_safe_default_protocol_versions()
-            .map_err(|e| format!("TLS_PIN: {e}"))?
-            .with_root_certificates(roots)
-            .with_no_client_auth(),
-    )
 }
 
 fn now_ms() -> u64 {
@@ -678,41 +644,5 @@ impl RemoteEvents for tauri::AppHandle {
             "type": "error",
             "message": message,
         }));
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::todo_config_from_disk;
-
-    fn write_config(dir: &std::path::Path, body: &str) {
-        std::fs::write(dir.join("config.json"), body).expect("write config");
-    }
-
-    #[test]
-    fn todo_config_upgrades_http_and_trims() {
-        let dir = std::env::temp_dir().join(format!("bnote-todo-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).expect("dir");
-        write_config(
-            &dir,
-            r#"{"settings":{"daily":{"sync":{"server":" http://101.96.243.197/b-todo ","key":" k "}}}}"#,
-        );
-        let (server, key) = todo_config_from_disk(&dir).expect("config");
-        assert_eq!(server, "https://101.96.243.197/b-todo");
-        assert_eq!(key, "k");
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn todo_config_absent_or_incomplete_is_none() {
-        let dir = std::env::temp_dir().join(format!("bnote-todo-empty-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).expect("dir");
-        assert!(todo_config_from_disk(&dir).is_none());
-        write_config(
-            &dir,
-            r#"{"settings":{"daily":{"sync":{"server":"https://x","key":""}}}}"#,
-        );
-        assert!(todo_config_from_disk(&dir).is_none());
-        std::fs::remove_dir_all(&dir).ok();
     }
 }

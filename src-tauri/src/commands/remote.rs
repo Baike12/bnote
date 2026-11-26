@@ -6,43 +6,51 @@ use serde_json::{json, Value};
 use tauri::State;
 
 use crate::remote::manager::RemoteManager;
-use crate::remote::{audit, pairing, settings};
+use crate::remote::{audit, crypto, settings};
 use crate::state::AppState;
+
+fn status_json(state: &AppState, manager: &RemoteManager) -> Value {
+    let data_dir = state.data_dir();
+    let saved = settings::load_settings(&data_dir);
+    let identity = manager.identity(&data_dir).ok();
+    let mut value = manager.status();
+    value["baseUrl"] = json!(saved.base_url);
+    value["relayUrl"] = json!(settings::relay_url(&saved.base_url).ok());
+    value["room"] = json!(identity
+        .as_ref()
+        .map(|i| i.room.clone())
+        .unwrap_or_default());
+    value["deviceId"] = json!(saved.device_id);
+    value["hasKey"] = json!(settings::has_key());
+    value["keySuffix"] = json!(settings::key_suffix());
+    value["connections"] = json!(manager.connections());
+    value["allowedProjects"] = json!(saved.allowed_projects);
+    value
+}
 
 #[tauri::command]
 pub fn remote_status(
     manager: State<'_, RemoteManager>,
     state: State<'_, AppState>,
 ) -> Result<Value, String> {
-    let data_dir = state.data_dir();
-    let mut value = manager.status();
-    let saved = settings::load_settings(&data_dir);
-    value["relayUrl"] = json!(saved.relay_url);
-    value["room"] = json!(saved.room);
-    value["deviceId"] = json!(saved.device_id);
-    value["devices"] = json!(pairing::load_devices(&data_dir));
-    value["allowedProjects"] = json!(saved.allowed_projects);
-    Ok(value)
+    Ok(status_json(&state, &manager))
 }
 
+/// Enabling without a key generates one and returns it exactly once. The key
+/// itself is never part of the status payload.
 #[tauri::command]
 pub async fn remote_set_enabled(
     app: tauri::AppHandle,
     manager: State<'_, RemoteManager>,
     state: State<'_, AppState>,
     enabled: bool,
-    relay_url: Option<String>,
 ) -> Result<Value, String> {
-    if let Some(url) = relay_url {
-        let url = url.trim().to_string();
-        if !url.is_empty() && !url.starts_with("wss://") {
-            return Err("BAD_PARAMS: relay 地址必须是 wss://".into());
-        }
-        let mut saved = settings::load_settings(&state.data_dir());
-        saved.relay_url = url;
-        settings::save_settings(&state.data_dir(), &saved)?;
-    }
+    let mut new_key = None;
     if enabled {
+        if !settings::has_key() {
+            let key = settings::generate_key()?;
+            new_key = Some(crypto::hex_encode(&key));
+        }
         manager.enable(app.clone()).await?;
     } else {
         manager.disable(&app);
@@ -53,61 +61,66 @@ pub async fn remote_set_enabled(
     let mut saved = settings::load_settings(&data_dir);
     saved.enabled = enabled;
     settings::save_settings(&data_dir, &saved)?;
-    let mut value = manager.status();
-    value["relayUrl"] = json!(saved.relay_url);
-    value["room"] = json!(saved.room);
-    value["deviceId"] = json!(saved.device_id);
-    value["devices"] = json!(pairing::load_devices(&data_dir));
-    value["allowedProjects"] = json!(saved.allowed_projects);
+    let mut value = status_json(&state, &manager);
+    value["newKey"] = json!(new_key);
     Ok(value)
 }
 
 #[tauri::command]
-pub fn remote_pairing_begin(
+pub async fn remote_set_base_url(
     app: tauri::AppHandle,
     manager: State<'_, RemoteManager>,
+    state: State<'_, AppState>,
+    base_url: String,
 ) -> Result<Value, String> {
-    let (payload, expires_at, room) = manager.begin_pairing(&app)?;
+    let normalized = settings::normalize_base_url(&base_url)?;
+    let data_dir = state.data_dir();
+    let mut saved = settings::load_settings(&data_dir);
+    saved.base_url = normalized;
+    settings::save_settings(&data_dir, &saved)?;
+    manager.restart(app.clone()).await?;
+    Ok(status_json(&state, &manager))
+}
+
+#[tauri::command]
+pub fn remote_key_generate(state: State<'_, AppState>) -> Result<Value, String> {
+    let key = settings::generate_key()?;
+    audit::append(&state.data_dir(), "system", "key", "remote key generated");
     Ok(json!({
-        "payload": payload,
-        "expiresAt": expires_at,
-        "room": room,
+        "key": crypto::hex_encode(&key),
+        "keySuffix": settings::key_suffix(),
     }))
 }
 
 #[tauri::command]
-pub fn remote_pairing_cancel(manager: State<'_, RemoteManager>) -> Result<(), String> {
-    manager.cancel_pairing();
-    Ok(())
-}
-
-#[tauri::command]
-pub fn remote_pair_approve(
-    manager: State<'_, RemoteManager>,
-    device_id: String,
-    allow: bool,
-) -> Result<(), String> {
-    manager.approve(&device_id, allow)
-}
-
-#[tauri::command]
-pub fn remote_devices(state: State<'_, AppState>) -> Result<Value, String> {
+pub fn remote_key_reveal() -> Result<Value, String> {
+    let key = settings::reveal_key()?;
     Ok(json!({
-        "devices": pairing::load_devices(&state.data_dir()),
+        "key": crypto::hex_encode(&key),
+        "keySuffix": settings::key_suffix(),
     }))
 }
 
+/// Rotating changes the room, which disconnects every phone at once. The
+/// b-todo key and the diary ciphertext are untouched.
 #[tauri::command]
-pub fn remote_revoke_device(
+pub async fn remote_key_rotate(
+    app: tauri::AppHandle,
     manager: State<'_, RemoteManager>,
     state: State<'_, AppState>,
-    device_id: String,
-) -> Result<(), String> {
-    let data_dir = state.data_dir();
-    pairing::revoke_device(&data_dir, &device_id)?;
-    manager.revoke(&device_id);
-    audit::append(&data_dir, "system", "revoke", &device_id);
-    Ok(())
+) -> Result<Value, String> {
+    let key = settings::rotate_key()?;
+    audit::append(
+        &state.data_dir(),
+        "system",
+        "key",
+        "remote key rotated; every phone must be given the new key",
+    );
+    manager.restart(app).await?;
+    Ok(json!({
+        "key": crypto::hex_encode(&key),
+        "keySuffix": settings::key_suffix(),
+    }))
 }
 
 #[tauri::command]
@@ -128,32 +141,6 @@ pub fn remote_set_allowed_projects(
 ) -> Result<Value, String> {
     let saved = settings::save_allowed_projects(&state.data_dir(), projects)?;
     Ok(json!({ "allowedProjects": saved.allowed_projects }))
-}
-
-/// Delivers the b-todo server URL and key over E2E after pairing. The key is
-/// never written to the desktop audit log.
-#[tauri::command]
-pub fn remote_todo_config(
-    manager: State<'_, RemoteManager>,
-    state: State<'_, AppState>,
-    device_id: String,
-    server: String,
-    key: String,
-) -> Result<(), String> {
-    let body = json!({
-        "t": "rpc",
-        "id": crate::remote::crypto::hex_encode(&crate::remote::crypto::random::<16>()),
-        "method": "todo.config",
-        "params": { "server": server, "key": key },
-    });
-    manager.send_to_device(&device_id, body.to_string())?;
-    audit::append(
-        &state.data_dir(),
-        &device_id,
-        "send",
-        "sent the todo configuration",
-    );
-    Ok(())
 }
 
 /// The desktop sidebar overlays running/origin by transcript id. The registry

@@ -220,6 +220,12 @@ pub fn run() {
         .setup(|app| {
             let data_dir = data_dir_for(app.handle());
             std::fs::create_dir_all(&data_dir)?;
+            // Before anything reads remote settings: a two-service install is
+            // reset to the merged layout, with remote disabled until the user
+            // generates a key. Idempotent; a failure leaves remote disabled.
+            if let Err(e) = remote::settings::migrate(&data_dir) {
+                eprintln!("remote settings migration failed: {e}");
+            }
             // The agent home is the open vault's `.bnote`, and no vault is open
             // yet. It is created, and the legacy configuration is copied into
             // it, when the vault is set (`commands::vault::set_vault`); doing it
@@ -251,7 +257,8 @@ pub fn run() {
             let remote_handle = app.handle().clone();
             let remote_dir = data_dir_for(app.handle());
             tauri::async_runtime::spawn(async move {
-                if remote::settings::load_settings(&remote_dir).enabled {
+                let saved = remote::settings::load_settings(&remote_dir);
+                if saved.enabled && remote::settings::has_key() {
                     let manager = remote_handle.state::<remote::manager::RemoteManager>();
                     if let Err(e) = manager.enable(remote_handle.clone()).await {
                         eprintln!("remote auto-enable failed: {e}");
@@ -364,14 +371,12 @@ pub fn run() {
             commands::agent::agent_question_reply,
             commands::remote::remote_status,
             commands::remote::remote_set_enabled,
-            commands::remote::remote_pairing_begin,
-            commands::remote::remote_pairing_cancel,
-            commands::remote::remote_pair_approve,
-            commands::remote::remote_devices,
-            commands::remote::remote_revoke_device,
+            commands::remote::remote_set_base_url,
+            commands::remote::remote_key_generate,
+            commands::remote::remote_key_reveal,
+            commands::remote::remote_key_rotate,
             commands::remote::remote_audit_tail,
             commands::remote::remote_set_allowed_projects,
-            commands::remote::remote_todo_config,
             commands::remote::agent_live_sessions,
             commands::remote::agent_attach_session,
             commands::preview::agent_preview_put,

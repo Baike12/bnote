@@ -1,0 +1,33 @@
+{
+  "note": "Each json is one WebSocket text frame. Decoders must accept every entry; encoders must emit present:false for the offline presence frame.",
+  "frames": [
+    {
+      "name": "hello-terminal",
+      "json": "{\"v\":2,\"type\":\"hello\",\"room\":\"4bf29deca19bc6adb427c4d0b88c735e\",\"role\":\"terminal\",\"device\":\"0123456789abcdef0123456789abcdef\"}"
+    },
+    {
+      "name": "hello-host",
+      "json": "{\"v\":2,\"type\":\"hello\",\"room\":\"4bf29deca19bc6adb427c4d0b88c735e\",\"role\":\"host\",\"device\":\"0123456789abcdef0123456789abcdef\",\"hostToken\":\"KioqKioqKioqKioqKioqKioqKioqKioqKioqKioqKio=\"}"
+    },
+    {
+      "name": "ready-terminal",
+      "json": "{\"v\":2,\"type\":\"ready\",\"room\":\"4bf29deca19bc6adb427c4d0b88c735e\",\"role\":\"terminal\",\"device\":\"0123456789abcdef0123456789abcdef\"}"
+    },
+    {
+      "name": "presence-online",
+      "json": "{\"v\":2,\"type\":\"presence\",\"present\":true,\"epoch\":3}"
+    },
+    {
+      "name": "presence-offline",
+      "json": "{\"v\":2,\"type\":\"presence\",\"present\":false,\"epoch\":3}"
+    },
+    {
+      "name": "data-terminal",
+      "json": "{\"v\":2,\"type\":\"data\",\"room\":\"4bf29deca19bc6adb427c4d0b88c735e\",\"role\":\"terminal\",\"device\":\"0123456789abcdef0123456789abcdef\",\"seq\":2,\"msgId\":\"00112233445566778899aabbccddeeff\",\"chunk\":0,\"chunks\":1,\"total\":3,\"payload\":\"AQID\"}"
+    },
+    {
+      "name": "error-auth-failed",
+      "json": "{\"v\":2,\"type\":\"error\",\"code\":\"AUTH_FAILED\",\"message\":\"host token mismatch\"}"
+    }
+  ]
+}

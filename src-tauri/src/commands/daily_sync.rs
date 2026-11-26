@@ -12,15 +12,15 @@ use super::CmdResult;
 use crate::daily_sync::client::SyncManager;
 use serde::Deserialize;
 
-/// Same convention as the bblog client: a bare host means http (the sync
-/// server is deployed on a bare IP behind plain nginx).
+/// A bare host means https: the merged service is only public behind the
+/// domain's TLS endpoint. Plain http is kept for localhost development.
 fn normalize_server(server: &str) -> Result<String, String> {
     let mut s = server.trim().trim_end_matches('/').to_string();
     if s.is_empty() {
         return Err("INVALID_SERVER: 服务器地址为空".into());
     }
     if !s.starts_with("http://") && !s.starts_with("https://") {
-        s = format!("http://{s}");
+        s = format!("https://{s}");
     }
     Ok(s)
 }
@@ -342,10 +342,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_bare_host_gets_http_and_trailing_slashes_are_dropped() {
+    fn a_bare_host_gets_https_and_trailing_slashes_are_dropped() {
         assert_eq!(
-            normalize_server("  101.96.243.197/  ").unwrap(),
-            "http://101.96.243.197"
+            normalize_server("  realbaike.tech/bnote/todo/  ").unwrap(),
+            "https://realbaike.tech/bnote/todo"
         );
         assert_eq!(
             normalize_server("http://x.local/b-todo/").unwrap(),

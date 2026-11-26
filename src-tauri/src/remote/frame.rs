@@ -1,4 +1,4 @@
-//! Relay-visible frames (`protocol/v1.md` §3–§4).
+//! Relay-visible frames (`protocol/v2.md` §3–§5).
 //!
 //! Only the relay reads these fields. The payload is opaque to it; the Mac's
 //! client validates it the same way the Go relay does, so a broken sender is
@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use super::crypto::{self, CryptoError};
 
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
 pub const MAX_FRAME: usize = 1 << 20;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -22,6 +22,7 @@ pub enum FrameType {
     Ping,
     Pong,
     Error,
+    Presence,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -101,6 +102,12 @@ pub struct RelayFrame {
     pub code: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub message: String,
+    /// Relay presence only. `Some(false)` must reach the wire: an omitted
+    /// field would make the phone believe a host is still attached.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub present: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub epoch: Option<u64>,
 }
 
 fn is_zero<T: PartialEq + From<u8>>(value: &T) -> bool {
@@ -183,6 +190,8 @@ impl RelayFrame {
             payload: Vec::new(),
             code: String::new(),
             message: String::new(),
+            present: None,
+            epoch: None,
         }
     }
 
@@ -202,6 +211,8 @@ impl RelayFrame {
             payload: Vec::new(),
             code: String::new(),
             message: String::new(),
+            present: None,
+            epoch: None,
         }
     }
 
@@ -230,6 +241,8 @@ impl RelayFrame {
             payload,
             code: String::new(),
             message: String::new(),
+            present: None,
+            epoch: None,
         }
     }
 
@@ -257,6 +270,16 @@ impl RelayFrame {
             payload: Vec::new(),
             code: String::new(),
             message: String::new(),
+            present: None,
+            epoch: None,
+        }
+    }
+
+    pub fn presence(present: bool, epoch: u64) -> Self {
+        Self {
+            present: Some(present),
+            epoch: Some(epoch),
+            ..Self::bare(FrameType::Presence)
         }
     }
 
@@ -460,13 +483,43 @@ mod tests {
 
     #[test]
     fn unknown_fields_are_ignored_and_version_is_checked() {
-        let raw = format!(r#"{{"v":1,"type":"ping","future":"x","room":"{ROOM}"}}"#);
+        let raw = format!(r#"{{"v":2,"type":"ping","future":"x","room":"{ROOM}"}}"#);
         assert_eq!(
             RelayFrame::decode(raw.as_bytes()).expect("decode").kind,
             FrameType::Ping
         );
-        assert!(RelayFrame::decode(br#"{"v":2,"type":"ping"}"#).is_err());
-        assert!(RelayFrame::decode(br#"{"v":1,"type":"nope"}"#).is_err());
+        assert!(RelayFrame::decode(br#"{"v":1,"type":"ping"}"#).is_err());
+        assert!(RelayFrame::decode(br#"{"v":2,"type":"nope"}"#).is_err());
+    }
+
+    #[test]
+    fn presence_false_survives_the_wire() {
+        let frame = RelayFrame::presence(false, 0);
+        let raw = frame.encode().expect("encode");
+        let text = String::from_utf8(raw).expect("utf8");
+        assert!(text.contains(r#""present":false"#), "{text}");
+        assert!(text.contains(r#""epoch":0"#), "{text}");
+        let back = RelayFrame::decode(text.as_bytes()).expect("decode");
+        assert_eq!(back.present, Some(false));
+        assert_eq!(back.epoch, Some(0));
+    }
+
+    #[test]
+    fn frame_vectors_decode() {
+        let v = vectors("frames.json");
+        for case in v["frames"].as_array().expect("frames") {
+            let name = case["name"].as_str().expect("name");
+            let raw = case["json"].as_str().expect("json");
+            let f = RelayFrame::decode(raw.as_bytes()).unwrap_or_else(|e| panic!("{name}: {e}"));
+            assert_eq!(f.v, VERSION, "{name}");
+            if f.kind == FrameType::Presence {
+                assert!(f.present.is_some(), "{name}");
+                assert!(f.epoch.is_some(), "{name}");
+            }
+            if let Some(token) = &f.host_token {
+                assert_eq!(token.len(), 32, "{name}");
+            }
+        }
     }
 
     #[test]
